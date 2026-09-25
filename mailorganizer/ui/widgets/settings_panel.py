@@ -22,7 +22,9 @@ from PyQt6.QtWidgets import (
 from mailorganizer.services.mail_service import MailAccountCredentials, MailService
 from mailorganizer.services.ollama_service import OllamaService
 from mailorganizer.services.storage_service import StorageService
+from mailorganizer.ui.widgets.integrations_panel import IntegrationsTab
 from mailorganizer.ui.widgets.rules_panel import AnalysisRulesTab
+from mailorganizer.ui.widgets.ui_settings_panel import UiSettingsTab
 from mailorganizer.utils.exceptions import MailOrganizerError
 
 
@@ -182,24 +184,35 @@ class SettingsDialog(QDialog):
 
         self.mail_tab = MailSettingsTab()
         self.ollama_tab = OllamaSettingsTab()
-        self.ui_placeholder = QLabel("UI-Einstellungen: kommt in einer späteren Version.")
 
         self.tabs.addTab(self.mail_tab, "Mail-Einstellungen")
         self.tabs.addTab(self.ollama_tab, "Ollama-Konfiguration")
 
         if storage is not None:
             self.rules_tab = AnalysisRulesTab(storage, user_id)
+            self.integrations_tab = IntegrationsTab(storage, user_id)
+            self.ui_tab = UiSettingsTab(storage, user_id)
         else:
             self.rules_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
+            self.integrations_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
+            self.ui_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
         self.tabs.addTab(self.rules_tab, "Analyse-Regeln")
-        self.tabs.addTab(self.ui_placeholder, "UI-Einstellungen")
+        self.tabs.addTab(self.integrations_tab, "Integrationen")
+        self.tabs.addTab(self.ui_tab, "UI-Einstellungen")
 
         layout.addWidget(self.tabs)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _on_accept(self) -> None:
+        if isinstance(self.integrations_tab, IntegrationsTab):
+            self.integrations_tab.save()
+        if isinstance(self.ui_tab, UiSettingsTab):
+            self.ui_tab.save()
+        self.accept()
 
     def mail_values(self) -> MailSettingsValues:
         return self.mail_tab.values()

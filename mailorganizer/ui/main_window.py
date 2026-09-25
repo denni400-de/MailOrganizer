@@ -22,11 +22,17 @@ from mailorganizer.services.mail_service import MailAccountCredentials, MailServ
 from mailorganizer.services.ollama_service import OllamaService
 from mailorganizer.services.rules_service import RulesEngine
 from mailorganizer.services.storage_service import StorageService
+from mailorganizer.services.webhook_service import WebhookError, WebhookService
+from mailorganizer.ui.widgets.benchmark_dialog import BenchmarkDialog
 from mailorganizer.ui.widgets.cleanup_dialog import CleanupDialog
+from mailorganizer.ui.widgets.integrations_panel import load_webhook_config
 from mailorganizer.ui.widgets.mail_list import MailListWidget
 from mailorganizer.ui.widgets.preview_panel import PreviewPanel
+from mailorganizer.ui.widgets.report_dialog import ReportDialog
 from mailorganizer.ui.widgets.settings_panel import SettingsDialog
 from mailorganizer.ui.widgets.status_bar import AppStatusBar
+from mailorganizer.ui.widgets.ui_settings_panel import load_ui_preferences
+from mailorganizer.ui.theme import apply_theme
 from mailorganizer.utils.crypto import decrypt_password, encrypt_password
 from mailorganizer.utils.exceptions import MailOrganizerError
 from mailorganizer.utils.logger import get_logger
@@ -94,7 +100,13 @@ class MainWindow(QMainWindow):
         cleanup_btn = QPushButton("🗑️ Cleanup")
         cleanup_btn.clicked.connect(self.open_cleanup)
 
-        for btn in (settings_btn, sync_btn, analyze_btn, cleanup_btn):
+        report_btn = QPushButton("📊 Bericht")
+        report_btn.clicked.connect(self.open_report)
+
+        benchmark_btn = QPushButton("🏁 Benchmark")
+        benchmark_btn.clicked.connect(self.open_benchmark)
+
+        for btn in (settings_btn, sync_btn, analyze_btn, cleanup_btn, report_btn, benchmark_btn):
             layout.addWidget(btn)
         layout.addStretch(1)
 
@@ -129,8 +141,19 @@ class MainWindow(QMainWindow):
                 smtp_port=user.smtp_port,
             )
         self.sync_timer.start()
+        self._apply_stored_theme()
         self._refresh_mail_list()
         return True
+
+    def _apply_stored_theme(self) -> None:
+        if self.user_id is None:
+            return
+        from PyQt6.QtWidgets import QApplication
+
+        theme, font_size, _language = load_ui_preferences(self.storage, self.user_id)
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, theme, font_size)
 
     # -- Settings ---------------------------------------------------------
 
@@ -138,6 +161,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self, storage=self.storage, user_id=self.user_id)
         if dialog.exec():
             self._apply_settings(dialog)
+            self._apply_stored_theme()
 
     def open_cleanup(self) -> None:
         if self.user_id is None:
@@ -146,6 +170,22 @@ class MainWindow(QMainWindow):
         dialog = CleanupDialog(self.storage, self.user_id, self)
         if dialog.exec():
             self._refresh_mail_list(sort_by_importance=dialog.sort_by_importance)
+
+    def open_report(self) -> None:
+        if self.user_id is None:
+            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
+            return
+        dialog = ReportDialog(self.storage, self.user_id, self)
+        dialog.exec()
+
+    def open_benchmark(self) -> None:
+        if self.user_id is None:
+            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
+            return
+        ollama_config = self.storage.get_ollama_config(self.user_id)
+        ollama_url = ollama_config.ollama_url if ollama_config else "http://localhost:11434"
+        dialog = BenchmarkDialog(self.storage, self.user_id, ollama_url, self)
+        dialog.exec()
 
     def _apply_settings(self, dialog: SettingsDialog) -> None:
         mail_values = dialog.mail_values()
@@ -224,6 +264,8 @@ class MainWindow(QMainWindow):
         if not db_mails:
             return
 
+        _theme, _font_size, analysis_language = load_ui_preferences(self.storage, self.user_id)
+
         progress = QProgressDialog("Analysiere Mails...", "Abbrechen", 0, len(db_mails), self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
 
@@ -244,8 +286,9 @@ class MainWindow(QMainWindow):
                 html_body=db_mail.html_body or "",
             )
             try:
-                result = analysis_service.analyze_mail(mail_data)
-                self.storage.save_analysis(db_mail.id, result)
+                result = analysis_service.analyze_mail(mail_data, user_language=analysis_language)
+                analysis_row = self.storage.save_analysis(db_mail.id, result)
+                self._notify_webhook_if_important(db_mail, analysis_row)
             except MailOrganizerError as exc:
                 logger.error("Analysis failed for mail %s: %s", db_mail.id, exc)
 
@@ -257,6 +300,16 @@ class MainWindow(QMainWindow):
             logger.info("Analyse-Regeln angewendet auf %s Mails", affected)
 
         self._refresh_mail_list()
+
+    def _notify_webhook_if_important(self, mail: Mail, analysis) -> None:
+        if self.user_id is None:
+            return
+        config = load_webhook_config(self.storage, self.user_id)
+        service = WebhookService(config)
+        try:
+            service.notify_if_important(mail, analysis)
+        except WebhookError as exc:
+            logger.error("Webhook-Benachrichtigung fehlgeschlagen: %s", exc)
 
     # -- List / preview -----------------------------------------------
 

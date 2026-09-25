@@ -9,6 +9,7 @@ import time
 from mailorganizer.config import constants
 from mailorganizer.models.analysis import AnalysisResult
 from mailorganizer.models.mail import MailData
+from mailorganizer.services.language_service import detect_language
 from mailorganizer.services.ollama_service import OllamaService
 from mailorganizer.utils.email_utils import strip_html, truncate_body
 from mailorganizer.utils.exceptions import AnalysisError
@@ -32,18 +33,23 @@ class AnalysisService:
         self,
         mail: MailData,
         email_number: int = 1,
-        user_language: str = "Deutsch",
+        user_language: str = "auto",
         user_preferences: str = "",
     ) -> str:
-        """Build the user prompt for a single mail, per the template in IMPLEMENTATION_PLAN.md."""
+        """Build the user prompt for a single mail, per the template in IMPLEMENTATION_PLAN.md.
+
+        `user_language="auto"` (the default) detects the mail's language from its body via
+        the heuristic language_service instead of a fixed language (plan section 8.6).
+        """
         body_text = mail.body or strip_html(mail.html_body)
+        resolved_language = detect_language(body_text) if user_language == "auto" else user_language
         return constants.ANALYSIS_USER_PROMPT_TEMPLATE.format(
             sender=mail.sender,
             subject=mail.subject,
             date=mail.received_at.isoformat(),
             body_excerpt=truncate_body(body_text),
             email_number=email_number,
-            user_language=user_language,
+            user_language=resolved_language,
             user_preferences=user_preferences or "keine",
         )
 
@@ -51,7 +57,7 @@ class AnalysisService:
         self,
         mail: MailData,
         email_number: int = 1,
-        user_language: str = "Deutsch",
+        user_language: str = "auto",
         user_preferences: str = "",
     ) -> AnalysisResult:
         """Analyze a single mail and return a structured AnalysisResult."""
