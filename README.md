@@ -65,6 +65,15 @@ App nie eingefroren wirkt und keine doppelten Aktionen ausgelöst werden können
 Das Skript legt eine virtuelle Umgebung an, installiert alle Abhängigkeiten, erzeugt eine `.env`
 mit generiertem Verschlüsselungs-Schlüssel und zeigt an, wie die App gestartet wird.
 
+### Windows: täglicher Start
+
+`start.bat` doppelklicken statt manuell `python -m mailorganizer.main` aufzurufen. Es prüft bei
+jedem Start, ob die virtuelle Umgebung und insbesondere `PyQt6.QtWidgets` wirklich importierbar
+sind, und repariert die Installation automatisch (deinstalliert/installiert PyQt6 neu), falls
+nicht — das behebt u. a. den häufigen Windows-Fehler `ModuleNotFoundError: No module named
+'PyQt6.QtWidgets'` (unvollständige Installation, oft durch Antivirus-Eingriffe während `pip
+install`). Bei einem Fehler bleibt das Fenster offen, damit die Meldung lesbar bleibt.
+
 Manuell geht es natürlich auch:
 
 ```bash
