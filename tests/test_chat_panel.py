@@ -129,3 +129,78 @@ def test_result_click_discards_stale_response(view, qapp):
 
     # The visible preview must correspond to the second (final) selection, not the first.
     assert view.preview_view.toPlainText() != ""
+
+
+def test_zero_match_followup_search_clears_stale_results(view, qapp):
+    """Regression test: a follow-up turn whose list/search tool call matches nothing must
+    still clear the previous (unrelated) results, not leave them looking like matches for
+    the new, empty query."""
+    with patch("mailorganizer.ui.widgets.chat_panel.OllamaService") as mock_cls:
+        mock_instance = MagicMock()
+        mock_instance.generate.side_effect = [
+            OllamaResponse(text='{"tool": "list_mails", "args": {}}', model="m"),
+            OllamaResponse(text='{"final_answer": "Hier sind alle Mails."}', model="m"),
+        ]
+        mock_cls.return_value = mock_instance
+        view.input_edit.setText("Zeig mir alles")
+        view._send()
+        _run_until(qapp, lambda: view.send_button.isEnabled())
+
+    assert view.results_table.rowCount() == 2  # sanity check: the first turn populated it
+
+    with patch("mailorganizer.ui.widgets.chat_panel.OllamaService") as mock_cls:
+        mock_instance = MagicMock()
+        mock_instance.generate.side_effect = [
+            OllamaResponse(text='{"tool": "search_mails", "args": {"query": "nichts-passt"}}', model="m"),
+            OllamaResponse(text='{"final_answer": "Keine Treffer."}', model="m"),
+        ]
+        mock_cls.return_value = mock_instance
+        view.input_edit.setText("Suche nach nichts-passt")
+        view._send()
+        _run_until(qapp, lambda: view.send_button.isEnabled())
+
+    assert view.results_table.rowCount() == 0
+
+
+def test_show_results_invalidates_in_flight_preview_lookup(view, qapp):
+    """Regression test: if a get_mail lookup for a previously selected row is still running
+    when a new turn's _show_results() resets the table, that stale lookup's eventual result
+    must not land in the (now-cleared) preview pane."""
+    import time as time_module
+
+    with patch("mailorganizer.ui.widgets.chat_panel.OllamaService") as mock_cls:
+        mock_instance = MagicMock()
+        mock_instance.generate.side_effect = [
+            OllamaResponse(text='{"tool": "list_mails", "args": {}}', model="m"),
+            OllamaResponse(text='{"final_answer": "Da sind sie."}', model="m"),
+        ]
+        mock_cls.return_value = mock_instance
+        view.input_edit.setText("Zeig mir alles")
+        view._send()
+        _run_until(qapp, lambda: view.send_button.isEnabled())
+
+    def slow_get_mail(mail_id):
+        time_module.sleep(0.3)
+        return {"sender": "stale@x.com", "subject": "STALE", "date": "-", "category": None, "body": "stale body"}
+
+    with patch("mailorganizer.ui.widgets.chat_panel.ChatTools") as mock_tools_cls:
+        mock_tools_cls.return_value.get_mail.side_effect = slow_get_mail
+        view.results_table.selectRow(0)  # kicks off the slow (stale-by-the-time-it-finishes) lookup
+
+        with patch("mailorganizer.ui.widgets.chat_panel.OllamaService") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.generate.side_effect = [
+                OllamaResponse(text='{"tool": "search_mails", "args": {"query": "nichts"}}', model="m"),
+                OllamaResponse(text='{"final_answer": "Keine Treffer."}', model="m"),
+            ]
+            mock_cls.return_value = mock_instance
+            view.input_edit.setText("Suche nach nichts")
+            view._send()
+            _run_until(qapp, lambda: view.send_button.isEnabled())
+
+        # Give the slow, now-stale get_mail lookup time to finish and (incorrectly, if the
+        # bug were present) try to overwrite the preview.
+        _run_until(qapp, lambda: False, timeout_ms=500)
+
+    assert view.preview_view.toPlainText() == ""
+    assert "STALE" not in view.preview_view.toPlainText()

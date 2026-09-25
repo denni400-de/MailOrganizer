@@ -159,12 +159,14 @@ class ChatView(QWidget):
 
         collected_mails: list[dict] = []
         seen_ids: set = set()
+        had_list_call = False
         for call in result.tool_calls:
             self._append(
                 f"<i>🔧 {_escape(call.tool)}({_escape(str(call.args))}) → "
                 f"{_escape(call.result_summary[:200])}{'…' if len(call.result_summary) > 200 else ''}</i>"
             )
             if call.tool in _LIST_TOOLS and isinstance(call.result, list):
+                had_list_call = True
                 # A turn can make several list-returning tool calls (e.g. list_mails then
                 # search_mails) — accumulate all of them instead of letting the last call's
                 # results silently replace the earlier ones in the table.
@@ -175,7 +177,10 @@ class ChatView(QWidget):
                     seen_ids.add(mail_id)
                     collected_mails.append(mail)
 
-        if collected_mails:
+        if had_list_call:
+            # Always refresh the table when this turn asked a list/search tool, even if it
+            # matched nothing — otherwise a zero-match follow-up search would leave the
+            # previous, unrelated search's rows on screen looking like its results.
             self._show_results(collected_mails)
 
         self._append(f"<b>Assistent:</b> {_escape(result.final_answer)}")
@@ -200,6 +205,9 @@ class ChatView(QWidget):
             self.results_table.setItem(row, 2, QTableWidgetItem(str(mail.get("date", ""))))
             self._result_mail_ids.append(mail.get("id"))
         self.preview_view.clear()
+        # Invalidate any still-in-flight get_mail lookup from the previous table so its
+        # eventual (now stale) result can't land in the preview pane after this reset.
+        self._preview_request_id += 1
 
     def _on_result_selected(self) -> None:
         if self.user_id is None:

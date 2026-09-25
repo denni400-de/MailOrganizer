@@ -47,6 +47,21 @@ def test_connect_success(mock_imap_cls):
 
 
 @patch("mailorganizer.services.mail_service.IMAPClient")
+def test_connect_passes_a_socket_timeout(mock_imap_cls):
+    """Regression test: without a timeout, a hung/slow network connection can block a
+    background sync/folder-listing task indefinitely, defeating any bounded wait elsewhere
+    (e.g. MainWindow.closeEvent's drain) that assumes the call will eventually return."""
+    mock_imap_cls.return_value = MagicMock()
+
+    service = MailService(make_credentials())
+    service.connect()
+
+    _args, kwargs = mock_imap_cls.call_args
+    assert kwargs.get("timeout") is not None
+    assert kwargs["timeout"] > 0
+
+
+@patch("mailorganizer.services.mail_service.IMAPClient")
 def test_connect_failure_raises_mail_connection_error(mock_imap_cls):
     mock_client = MagicMock()
     mock_client.login.side_effect = IMAPClientError("bad login")

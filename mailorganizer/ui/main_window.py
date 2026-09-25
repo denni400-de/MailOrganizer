@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtWidgets import (
@@ -141,6 +142,7 @@ class MainWindow(QMainWindow):
         self.user_id: int | None = None
         self.mail_credentials: MailAccountCredentials | None = None
         self._sync_in_progress = False
+        self._sync_requested_again = False
 
         self._build_ui()
         self._build_toolbar()
@@ -341,7 +343,11 @@ class MainWindow(QMainWindow):
             # The periodic sync_timer can fire again (or the user can click Sync, or a
             # settings save can trigger one) while a previous sync is still running on its
             # background thread — disabling the toolbar button doesn't stop the QTimer, so
-            # this flag is the actual guard against two concurrent _sync_task runs.
+            # this flag is the actual guard against two concurrent _sync_task runs. Rather
+            # than silently dropping this request, remember it and re-run once the in-flight
+            # sync finishes, so an explicit user action (Sync click, post-save sync) is never
+            # just lost until the next timer tick.
+            self._sync_requested_again = True
             return
         self._sync_in_progress = True
         folder = self.folder_panel.selected_folder() or "INBOX"
@@ -363,6 +369,7 @@ class MainWindow(QMainWindow):
         self.status_bar_widget.stop_busy()
         self._set_actions_enabled(True)
         self._refresh_mail_list()
+        self._rerun_sync_if_requested()
 
     def _on_sync_error(self, message: str) -> None:
         self._sync_in_progress = False
@@ -370,6 +377,12 @@ class MainWindow(QMainWindow):
         self.status_bar_widget.stop_busy()
         self._set_actions_enabled(True)
         QMessageBox.warning(self, "Sync-Fehler", message)
+        self._rerun_sync_if_requested()
+
+    def _rerun_sync_if_requested(self) -> None:
+        if self._sync_requested_again:
+            self._sync_requested_again = False
+            self.sync_mails()
 
     def load_folders(self) -> None:
         if self.mail_credentials is None:
@@ -490,7 +503,34 @@ class MainWindow(QMainWindow):
         # on the QThreadPool would keep executing through that teardown and could crash trying
         # to touch now-invalid Python/Qt state — the same class of lifecycle bug already fixed
         # once in workers.py, here at the process-exit boundary instead of the per-task one.
-        # Give in-flight work a bounded chance to finish cleanly before we let the app quit.
+        #
+        # A single blocking waitForDone() would just trade that crash for freezing the whole
+        # GUI thread for the duration — exactly the kind of unresponsive-app complaint this
+        # series of fixes exists to remove. Instead: ignore the first close, cooperatively
+        # cancel anything cancellable (the analyze loop already polls an Event), hide the
+        # window immediately for a responsive feel, and poll the thread pool on a QTimer so
+        # the event loop keeps running while we wait — then let the real close through once
+        # everything has drained or a generous bound (matching MailService's 30s socket
+        # timeout, so a hung IMAP call has a real chance to time out on its own) elapses.
+        if getattr(self, "_shutdown_ready", False):
+            super().closeEvent(event)
+            return
+
+        event.ignore()
         self.sync_timer.stop()
-        QThreadPool.globalInstance().waitForDone(10000)
-        super().closeEvent(event)
+        if hasattr(self, "_analyze_cancel_event"):
+            self._analyze_cancel_event.set()
+        self.hide()
+
+        self._shutdown_deadline = time.monotonic() + 32.0
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.timeout.connect(self._poll_shutdown)
+        self._shutdown_timer.start(100)
+        self._poll_shutdown()
+
+    def _poll_shutdown(self) -> None:
+        pool = QThreadPool.globalInstance()
+        if pool.activeThreadCount() == 0 or time.monotonic() >= self._shutdown_deadline:
+            self._shutdown_timer.stop()
+            self._shutdown_ready = True
+            self.close()
