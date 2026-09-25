@@ -1,5 +1,8 @@
-"""Weekly report dialog with a category pie chart, importance bar chart, top senders,
+"""Weekly report view with a category pie chart, importance bar chart, top senders,
 suggested cleanup actions, and PDF export via Qt's built-in QPdfWriter (no extra dependency).
+
+Lives as a tab in MainWindow (ReportView) rather than a popup dialog, and resizes to
+whatever space the tab gets — the QScrollArea keeps long content from being cut off.
 """
 
 from __future__ import annotations
@@ -8,7 +11,6 @@ from PyQt6.QtCore import QRectF
 from PyQt6.QtGui import QFont, QPageSize, QPainter
 from PyQt6.QtPrintSupport import QPrinter
 from PyQt6.QtWidgets import (
-    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -25,70 +27,91 @@ from mailorganizer.services.storage_service import StorageService
 from mailorganizer.ui.widgets.charts import BarChartWidget, PieChartWidget, draw_bar_chart, draw_pie_chart
 
 
-class ReportDialog(QDialog):
-    """Displays the weekly report and offers a "Export als PDF" button."""
+class ReportView(QWidget):
+    """Displays the weekly report and offers an "Als PDF exportieren" button.
 
-    def __init__(self, storage: StorageService, user_id: int, parent=None):
+    Call refresh(user_id) whenever the tab becomes visible or the user wants fresh numbers.
+    """
+
+    def __init__(self, storage: StorageService, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Wöchentlicher Bericht")
-        self.resize(640, 640)
-
-        self.report_data = ReportService(storage).generate_weekly_report(user_id)
+        self.storage = storage
+        self.user_id: int | None = None
+        self.report_data: ReportData | None = None
 
         outer_layout = QVBoxLayout(self)
+
+        top_row = QHBoxLayout()
+        self.period_label = QLabel("Zeitraum: –")
+        header_font = QFont()
+        header_font.setBold(True)
+        self.period_label.setFont(header_font)
+        top_row.addWidget(self.period_label)
+        top_row.addStretch(1)
+        self.refresh_button = QPushButton("Aktualisieren")
+        self.refresh_button.clicked.connect(self.refresh)
+        top_row.addWidget(self.refresh_button)
+        outer_layout.addLayout(top_row)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
 
-        period_label = QLabel(
-            f"Zeitraum: {self.report_data.period_start.strftime('%d.%m.%Y')} – "
-            f"{self.report_data.period_end.strftime('%d.%m.%Y')} "
-            f"({self.report_data.total_mails} Mails)"
-        )
-        header_font = QFont()
-        header_font.setBold(True)
-        period_label.setFont(header_font)
-        layout.addWidget(period_label)
-
         layout.addWidget(QLabel("Top Absender:"))
-        senders_list = QListWidget()
-        for sender, count in self.report_data.top_senders:
-            senders_list.addItem(f"{sender} — {count} Mail(s)")
-        senders_list.setMaximumHeight(120)
-        layout.addWidget(senders_list)
+        self.senders_list = QListWidget()
+        self.senders_list.setMaximumHeight(120)
+        layout.addWidget(self.senders_list)
 
         layout.addWidget(QLabel("Kategorie-Statistik:"))
         self.pie_chart = PieChartWidget()
-        self.pie_chart.set_data(self.report_data.category_counts)
         layout.addWidget(self.pie_chart)
 
         layout.addWidget(QLabel("Wichtigkeits-Verteilung:"))
         self.bar_chart = BarChartWidget()
-        self.bar_chart.set_data({str(k): v for k, v in self.report_data.importance_distribution.items()})
         layout.addWidget(self.bar_chart)
 
         layout.addWidget(QLabel("Vorgeschlagene Aufräum-Aktionen:"))
-        suggestions_list = QListWidget()
-        for suggestion in self.report_data.suggested_actions:
-            suggestions_list.addItem(suggestion)
-        suggestions_list.setMaximumHeight(120)
-        layout.addWidget(suggestions_list)
+        self.suggestions_list = QListWidget()
+        self.suggestions_list.setMaximumHeight(120)
+        layout.addWidget(self.suggestions_list)
 
         scroll.setWidget(content)
         outer_layout.addWidget(scroll)
 
-        button_row = QHBoxLayout()
         export_button = QPushButton("Als PDF exportieren")
         export_button.clicked.connect(self._export_pdf)
-        close_button = QPushButton("Schließen")
-        close_button.clicked.connect(self.accept)
-        button_row.addWidget(export_button)
-        button_row.addStretch(1)
-        button_row.addWidget(close_button)
-        outer_layout.addLayout(button_row)
+        outer_layout.addWidget(export_button)
+
+    def set_user_id(self, user_id: int) -> None:
+        self.user_id = user_id
+        self.refresh()
+
+    def refresh(self) -> None:
+        if self.user_id is None:
+            return
+        self.report_data = ReportService(self.storage).generate_weekly_report(self.user_id)
+        report = self.report_data
+
+        self.period_label.setText(
+            f"Zeitraum: {report.period_start.strftime('%d.%m.%Y')} – "
+            f"{report.period_end.strftime('%d.%m.%Y')} ({report.total_mails} Mails)"
+        )
+
+        self.senders_list.clear()
+        for sender, count in report.top_senders:
+            self.senders_list.addItem(f"{sender} — {count} Mail(s)")
+
+        self.pie_chart.set_data(report.category_counts)
+        self.bar_chart.set_data({str(k): v for k, v in report.importance_distribution.items()})
+
+        self.suggestions_list.clear()
+        for suggestion in report.suggested_actions:
+            self.suggestions_list.addItem(suggestion)
 
     def _export_pdf(self) -> None:
+        if self.report_data is None:
+            return
         path, _ = QFileDialog.getSaveFileName(self, "Bericht als PDF speichern", "mailorganizer_bericht.pdf", "PDF (*.pdf)")
         if not path:
             return

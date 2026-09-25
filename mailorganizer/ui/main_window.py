@@ -1,38 +1,47 @@
-"""Main application window wiring together services and widgets."""
+"""Main application window: tabbed layout (Postfach, Bericht, Cleanup, Benchmark, Chat,
+Einstellungen) instead of popup dialogs, so nothing has to be re-opened or gets cut off.
+"""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer
+import json
+
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QHBoxLayout,
+    QApplication,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from mailorganizer.config.settings import Settings, get_settings
-from mailorganizer.models.database import Mail
+from mailorganizer.models.database import Mail, User
+from mailorganizer.models.mail import MailData
 from mailorganizer.services.analysis_service import AnalysisService
 from mailorganizer.services.mail_service import MailAccountCredentials, MailService
 from mailorganizer.services.ollama_service import OllamaService
 from mailorganizer.services.rules_service import RulesEngine
 from mailorganizer.services.storage_service import StorageService
 from mailorganizer.services.webhook_service import WebhookError, WebhookService
-from mailorganizer.ui.widgets.benchmark_dialog import BenchmarkDialog
-from mailorganizer.ui.widgets.cleanup_dialog import CleanupDialog
+from mailorganizer.ui.theme import apply_theme
+from mailorganizer.ui.widgets.benchmark_dialog import BenchmarkView
+from mailorganizer.ui.widgets.chat_panel import ChatView
+from mailorganizer.ui.widgets.cleanup_view import CleanupView
+from mailorganizer.ui.widgets.folder_panel import FolderPanel
 from mailorganizer.ui.widgets.integrations_panel import load_webhook_config
 from mailorganizer.ui.widgets.mail_list import MailListWidget
 from mailorganizer.ui.widgets.preview_panel import PreviewPanel
-from mailorganizer.ui.widgets.report_dialog import ReportDialog
-from mailorganizer.ui.widgets.settings_panel import SettingsDialog
+from mailorganizer.ui.widgets.report_dialog import ReportView
+from mailorganizer.ui.widgets.settings_panel import SettingsView
 from mailorganizer.ui.widgets.status_bar import AppStatusBar
 from mailorganizer.ui.widgets.ui_settings_panel import load_ui_preferences
-from mailorganizer.ui.theme import apply_theme
 from mailorganizer.utils.crypto import decrypt_password, encrypt_password
 from mailorganizer.utils.exceptions import MailOrganizerError
 from mailorganizer.utils.logger import get_logger
@@ -41,13 +50,13 @@ logger = get_logger("main_window")
 
 
 class MainWindow(QMainWindow):
-    """Top-level window: toolbar, mail list + preview split, status bar."""
+    """Top-level window: a tab per feature area, plus a slim toolbar for Sync/Analysieren."""
 
     def __init__(self, settings: Settings | None = None, parent=None):
         super().__init__(parent)
         self.settings = settings or get_settings()
         self.setWindowTitle("Mail Organizer")
-        self.resize(1100, 700)
+        self.resize(1200, 750)
 
         self.storage = StorageService(self.settings.resolved_database_path)
         self.user_id: int | None = None
@@ -61,64 +70,86 @@ class MainWindow(QMainWindow):
         self.sync_timer.timeout.connect(self.sync_mails)
 
         if not self._load_stored_account():
-            QTimer.singleShot(200, self.open_settings)
+            self.tabs.setCurrentWidget(self.settings_view)
+
+    # -- UI construction -----------------------------------------------
 
     def _build_ui(self) -> None:
-        central = QWidget()
-        layout = QVBoxLayout(central)
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.mail_list = MailListWidget()
-        self.preview_panel = PreviewPanel()
-        splitter.addWidget(self.mail_list)
-        splitter.addWidget(self.preview_panel)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
+        self._build_mailbox_tab()
 
-        layout.addWidget(splitter)
-        self.setCentralWidget(central)
+        self.report_view = ReportView(self.storage)
+        self.tabs.addTab(self.report_view, "📊 Bericht")
 
-        self.mail_list.mail_selected.connect(self._on_mail_selected)
-        self.mail_list.archive_sender_requested.connect(self._on_archive_sender_requested)
+        self.cleanup_view = CleanupView(self.storage)
+        self.tabs.addTab(self.cleanup_view, "🗑️ Cleanup")
+
+        self.benchmark_view = BenchmarkView(self.storage)
+        self.tabs.addTab(self.benchmark_view, "🏁 Benchmark")
+
+        self.chat_view = ChatView(self.storage)
+        self.tabs.addTab(self.chat_view, "💬 Chat")
+
+        self.settings_view = SettingsView(self.storage, self.user_id)
+        self.settings_view.settings_saved.connect(self._on_settings_saved)
+        self.tabs.addTab(self.settings_view, "⚙️ Einstellungen")
+
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.status_bar_widget = AppStatusBar()
         self.setStatusBar(self.status_bar_widget)
 
-    def _build_toolbar(self) -> None:
-        toolbar = QWidget()
-        layout = QHBoxLayout(toolbar)
+    def _build_mailbox_tab(self) -> None:
+        mailbox = QWidget()
+        layout = QVBoxLayout(mailbox)
 
-        settings_btn = QPushButton("⚙️ Einstellungen")
-        settings_btn.clicked.connect(self.open_settings)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.folder_panel = FolderPanel()
+        self.mail_list = MailListWidget()
+        self.preview_panel = PreviewPanel()
+        splitter.addWidget(self.folder_panel)
+        splitter.addWidget(self.mail_list)
+        splitter.addWidget(self.preview_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 3)
+
+        layout.addWidget(splitter)
+
+        self.folder_panel.folder_selected.connect(self._on_folder_selected)
+        self.mail_list.mail_selected.connect(self._on_mail_selected)
+        self.mail_list.archive_sender_requested.connect(self._on_archive_sender_requested)
+
+        self.tabs.addTab(mailbox, "📬 Postfach")
+
+    def _build_toolbar(self) -> None:
+        toolbar = self.addToolBar("Aktionen")
 
         sync_btn = QPushButton("🔄 Sync")
         sync_btn.clicked.connect(self.sync_mails)
+        toolbar.addWidget(sync_btn)
 
         analyze_btn = QPushButton("🧠 Analysieren")
         analyze_btn.clicked.connect(self.analyze_new_mails)
+        toolbar.addWidget(analyze_btn)
 
-        cleanup_btn = QPushButton("🗑️ Cleanup")
-        cleanup_btn.clicked.connect(self.open_cleanup)
+        load_folders_btn = QPushButton("📁 Ordner laden")
+        load_folders_btn.clicked.connect(self.load_folders)
+        toolbar.addWidget(load_folders_btn)
 
-        report_btn = QPushButton("📊 Bericht")
-        report_btn.clicked.connect(self.open_report)
+    def _on_tab_changed(self, index: int) -> None:
+        if self.user_id is None:
+            return
+        widget = self.tabs.widget(index)
+        if widget in (self.report_view, self.cleanup_view, self.benchmark_view):
+            widget.refresh() if hasattr(widget, "refresh") else None
 
-        benchmark_btn = QPushButton("🏁 Benchmark")
-        benchmark_btn.clicked.connect(self.open_benchmark)
-
-        for btn in (settings_btn, sync_btn, analyze_btn, cleanup_btn, report_btn, benchmark_btn):
-            layout.addWidget(btn)
-        layout.addStretch(1)
-
-        dock_container = self.addToolBar("Aktionen")
-        dock_container.addWidget(toolbar)
+    # -- Account loading -----------------------------------------------
 
     def _load_stored_account(self) -> bool:
         """Load the first stored user account and wire up credentials, if any exists."""
-        from sqlalchemy import select
-
-        from mailorganizer.models.database import User
-
         with self.storage.session() as session:
             user = session.scalar(select(User))
             if user is None:
@@ -140,16 +171,26 @@ class MainWindow(QMainWindow):
                 smtp_server=user.smtp_server,
                 smtp_port=user.smtp_port,
             )
+
+        self._wire_up_user_id()
         self.sync_timer.start()
         self._apply_stored_theme()
         self._refresh_mail_list()
         return True
 
+    def _wire_up_user_id(self) -> None:
+        if self.user_id is None:
+            return
+        self.folder_panel.set_folders(self.storage.list_known_folders(self.user_id))
+        self.report_view.set_user_id(self.user_id)
+        self.cleanup_view.set_user_id(self.user_id)
+        self.benchmark_view.set_user_id(self.user_id)
+        self.chat_view.set_user_id(self.user_id)
+        self.settings_view.set_user_id(self.user_id)
+
     def _apply_stored_theme(self) -> None:
         if self.user_id is None:
             return
-        from PyQt6.QtWidgets import QApplication
-
         theme, font_size, _language = load_ui_preferences(self.storage, self.user_id)
         app = QApplication.instance()
         if app is not None:
@@ -157,39 +198,9 @@ class MainWindow(QMainWindow):
 
     # -- Settings ---------------------------------------------------------
 
-    def open_settings(self) -> None:
-        dialog = SettingsDialog(self, storage=self.storage, user_id=self.user_id)
-        if dialog.exec():
-            self._apply_settings(dialog)
-            self._apply_stored_theme()
-
-    def open_cleanup(self) -> None:
-        if self.user_id is None:
-            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
-            return
-        dialog = CleanupDialog(self.storage, self.user_id, self)
-        if dialog.exec():
-            self._refresh_mail_list(sort_by_importance=dialog.sort_by_importance)
-
-    def open_report(self) -> None:
-        if self.user_id is None:
-            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
-            return
-        dialog = ReportDialog(self.storage, self.user_id, self)
-        dialog.exec()
-
-    def open_benchmark(self) -> None:
-        if self.user_id is None:
-            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
-            return
-        ollama_config = self.storage.get_ollama_config(self.user_id)
-        ollama_url = ollama_config.ollama_url if ollama_config else "http://localhost:11434"
-        dialog = BenchmarkDialog(self.storage, self.user_id, ollama_url, self)
-        dialog.exec()
-
-    def _apply_settings(self, dialog: SettingsDialog) -> None:
-        mail_values = dialog.mail_values()
-        ollama_values = dialog.ollama_values()
+    def _on_settings_saved(self) -> None:
+        mail_values = self.settings_view.mail_values()
+        ollama_values = self.settings_view.ollama_values()
 
         master_key = self.settings.mailorganizer_master_key
         try:
@@ -223,9 +234,13 @@ class MainWindow(QMainWindow):
                 smtp_server=mail_values.smtp_server,
                 smtp_port=mail_values.smtp_port,
             )
+            self._wire_up_user_id()
+            self._apply_stored_theme()
             self.sync_timer.start()
+            self.settings_view.show_status("✅ Gespeichert.")
             self.sync_mails()
         except MailOrganizerError as exc:
+            self.settings_view.show_status(f"❌ Fehler: {exc}")
             QMessageBox.critical(self, "Fehler", str(exc))
 
     # -- Sync & analysis ---------------------------------------------------
@@ -233,16 +248,29 @@ class MainWindow(QMainWindow):
     def sync_mails(self) -> None:
         if self.mail_credentials is None or self.user_id is None:
             return
+        folder = self.folder_panel.selected_folder() or "INBOX"
         try:
             with MailService(self.mail_credentials) as mail_service:
                 self.status_bar_widget.set_connected(True)
-                mails = mail_service.fetch_mails(limit=50)
+                mails = mail_service.fetch_mails(folder=folder, limit=50)
                 for mail in mails:
+                    mail.folder = folder
                     self.storage.save_mail(self.user_id, mail)
             self._refresh_mail_list()
         except MailOrganizerError as exc:
             self.status_bar_widget.set_connected(False)
             QMessageBox.warning(self, "Sync-Fehler", str(exc))
+
+    def load_folders(self) -> None:
+        if self.mail_credentials is None:
+            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
+            return
+        try:
+            with MailService(self.mail_credentials) as mail_service:
+                folders = mail_service.list_folders()
+            self.folder_panel.set_folders(folders)
+        except MailOrganizerError as exc:
+            QMessageBox.warning(self, "Ordner konnten nicht geladen werden", str(exc))
 
     def analyze_new_mails(self) -> None:
         if self.user_id is None:
@@ -268,9 +296,6 @@ class MainWindow(QMainWindow):
 
         progress = QProgressDialog("Analysiere Mails...", "Abbrechen", 0, len(db_mails), self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
-
-        from mailorganizer.models.mail import MailData
-        import json
 
         for i, db_mail in enumerate(db_mails):
             if progress.wasCanceled():
@@ -316,7 +341,8 @@ class MainWindow(QMainWindow):
     def _refresh_mail_list(self, sort_by_importance: bool = False) -> None:
         if self.user_id is None:
             return
-        mails = self.storage.list_mails(self.user_id)
+        folder = self.folder_panel.selected_folder() or None
+        mails = self.storage.list_mails(self.user_id, folder=folder)
         if sort_by_importance:
             mails = sorted(
                 mails,
@@ -327,6 +353,9 @@ class MainWindow(QMainWindow):
         unread = sum(1 for m in mails if not m.is_read)
         self.status_bar_widget.set_counts(len(mails), unread)
 
+    def _on_folder_selected(self, _folder: str) -> None:
+        self._refresh_mail_list()
+
     def _on_archive_sender_requested(self, sender: str) -> None:
         if self.user_id is None:
             return
@@ -335,9 +364,6 @@ class MainWindow(QMainWindow):
             self._refresh_mail_list()
 
     def _on_mail_selected(self, mail_id: int) -> None:
-        from sqlalchemy import select
-        from sqlalchemy.orm import joinedload
-
         with self.storage.session() as session:
             mail = session.scalar(select(Mail).options(joinedload(Mail.analysis)).where(Mail.id == mail_id))
             self.preview_panel.set_mail(mail)

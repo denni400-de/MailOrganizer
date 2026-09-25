@@ -4,38 +4,58 @@ Intelligente E-Mail-Verwaltung mit lokaler LLM-Integration ([Ollama](https://oll
 Umsetzung von Phase 1–5 (Basis, Ollama-Integration, Intelligente Features, UX & Polish,
 Advanced) aus [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
-## Features
+## Oberfläche
 
-- IMAP/SMTP-Anbindung (Abrufen, Senden, Flaggen, Verschieben/Löschen von Mails)
+Ein Fenster, ein Tab pro Funktionsbereich (kein Popup-Wirrwarr, nichts wird abgeschnitten):
+
+- **📬 Postfach** – Ordner-Liste links (aus IMAP oder bereits synchronisierte Ordner), Mail-Liste,
+  Vorschau mit Analyse-Ergebnis. Rechtsklick auf eine Mail → "Alle Mails von diesem Sender archivieren".
+- **📊 Bericht** – Top-Absender, Kategorie-Statistik (Kreisdiagramm), Wichtigkeits-Verteilung
+  (Balkendiagramm), Aufräum-Vorschläge. Füllt den verfügbaren Platz (Scroll-Bereich, kein Abschneiden),
+  PDF-Export über Qt's eingebauten `QPdfWriter` (keine zusätzliche Abhängigkeit).
+- **🗑️ Cleanup** – zeigt vor jeder Aktion genau, welche Mails betroffen wären (alte Mails,
+  Spam, Duplikate), einzeln an-/abwählbar. Erst nach expliziter Auswahl + Bestätigung wird etwas
+  archiviert/gelöscht — keine blinde "unwiderruflich löschen?"-Frage mehr.
+- **🏁 Benchmark** – dieselben Mails mit mehreren Ollama-Modellen analysieren, Trefferzahl/
+  Fehler/Ø-Zeit vergleichen.
+- **💬 Chat** – Konversation mit der KI, die per Tool-Calling im Postfach suchen, Mails
+  zusammenfassen oder auf Zuruf archivieren kann (z. B. "Zeig mir alle Rechnungen von dieser
+  Woche" oder "Archiviere die Werbemails von Amazon"). Tool-Aufrufe werden transparent im
+  Verlauf angezeigt (kursiv), bevor die eigentliche Antwort kommt.
+- **⚙️ Einstellungen** – Mail-Konto, Ollama, Analyse-Regeln, Integrationen, UI (Theme/Schriftgröße/
+  Sprache) als Unterreiter, mit explizitem Speichern-Button.
+
+Eine schlanke Toolbar (🔄 Sync, 🧠 Analysieren, 📁 Ordner laden) bleibt immer sichtbar, da diese
+Aktionen unabhängig vom gerade offenen Tab gebraucht werden.
+
+## Weitere Features
+
 - Lokale Analyse von Mails über Ollama (Kategorie, Wichtigkeit, Sentiment, empfohlene Aktion)
-- SQLite-Persistierung via SQLAlchemy (Mails, Analyse-Ergebnisse, Einstellungen, Regeln)
-- PyQt6-GUI mit Mail-Liste, Vorschau-Panel und Analyse-Anzeige
+- SQLite-Persistierung via SQLAlchemy (Mails inkl. Ordner, Analyse-Ergebnisse, Einstellungen, Regeln)
+  — bestehende Datenbanken werden beim Start automatisch migriert (z. B. neue `folder`-Spalte)
 - Verschlüsselte Passwort-Speicherung (`cryptography.fernet`)
 - Automatischer Hintergrund-Sync (konfigurierbares Intervall)
-- **Benutzerdefinierte Analyse-Regeln** (Tab "Analyse-Regeln"): Bedingung (Feld/Operator/Wert)
-  → Aktion (archivieren, löschen, flaggen, Kategorie setzen), mit Priorität und Aktiv-Schalter.
-  Regeln werden nach jeder Analyse automatisch angewendet (erste passende Regel gewinnt).
-- **Mail-Cleanup** (🗑️-Button): alte Mails archivieren (älter als X Tage), Spam löschen,
-  Duplikate entfernen, optional Liste danach nach Wichtigkeit sortiert anzeigen —
-  mit Bestätigung, Fortschrittsanzeige und Zusammenfassung.
-- **Batch-Aktion**: Rechtsklick auf eine Mail → "Alle Mails von diesem Sender archivieren"
-- **Wöchentlicher Bericht** (📊-Button): Top-Absender, Kategorie-Statistik (Kreisdiagramm),
-  Wichtigkeits-Verteilung (Balkendiagramm), Aufräum-Vorschläge — mit PDF-Export (über Qt's
-  eingebauten `QPdfWriter`, ohne zusätzliche Abhängigkeit).
-- **Ollama-Model-Benchmarking** (🏁-Button): dieselben Mails mit mehreren Modellen analysieren
-  und Trefferzahl/Fehler/Ø-Zeit vergleichen.
-- **Externe Integrationen** (Tab "Integrationen"): Webhook-Benachrichtigung (Generic/Slack/Discord-Format)
-  bei Mails ab einer konfigurierbaren Wichtigkeits-Schwelle, inkl. Test-Button.
+- **Benutzerdefinierte Analyse-Regeln**: Bedingung (Feld/Operator/Wert) → Aktion (archivieren,
+  löschen, flaggen, Kategorie setzen), mit Priorität und Aktiv-Schalter. Regeln werden nach jeder
+  Analyse automatisch angewendet (erste passende Regel gewinnt).
+- **Externe Integrationen**: Webhook-Benachrichtigung (Generic/Slack/Discord-Format) bei Mails ab
+  einer konfigurierbaren Wichtigkeits-Schwelle, inkl. Test-Button.
 - **Mehrsprachige Analyse**: automatische Spracherkennung (heuristisch, ohne zusätzliche
-  Abhängigkeit) oder feste Sprache für die Analyse-Prompts, einstellbar in "UI-Einstellungen".
-- **UI-Einstellungen**: Dark/Light-Theme (sofort angewendet), Schriftgröße, Analyse-Sprache —
-  persistiert pro Benutzer.
+  Abhängigkeit) oder feste Sprache für die Analyse-Prompts.
 
 ## Installation
 
+**Windows:** `install.bat` doppelklicken (oder `powershell -ExecutionPolicy Bypass -File install.ps1`).
+**Linux/macOS:** `./install.sh`.
+
+Das Skript legt eine virtuelle Umgebung an, installiert alle Abhängigkeiten, erzeugt eine `.env`
+mit generiertem Verschlüsselungs-Schlüssel und zeigt an, wie die App gestartet wird.
+
+Manuell geht es natürlich auch:
+
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -75,12 +95,13 @@ Zielarchitektur. Aktuell umgesetzt:
 - `mailorganizer/config` – Einstellungen & Konstanten
 - `mailorganizer/models` – SQLAlchemy-ORM-Modelle & Datenklassen
 - `mailorganizer/services` – Mail-, Ollama-, Analyse-, Storage-, Scheduler-, Regel-, Cleanup-,
-  Report-, Benchmark-, Webhook- und Sprach-Service
-- `mailorganizer/ui` – PyQt6-Hauptfenster, Widgets (Analyse-Regeln, Cleanup, Bericht, Benchmark,
-  Integrationen, UI-Einstellungen), eigene QPainter-Chart-Widgets (Pie/Bar, ohne matplotlib),
-  Dark/Light-Themes
+  Report-, Benchmark-, Webhook-, Sprach- und Chat-Service
+- `mailorganizer/ui` – PyQt6-Hauptfenster (Tab-Layout), Widgets (Ordner-Panel, Cleanup-Vorschau,
+  Bericht, Benchmark, Chat, Einstellungen mit Unterreitern), eigene QPainter-Chart-Widgets
+  (Pie/Bar, ohne matplotlib), Dark/Light-Themes
 - `mailorganizer/utils` – Logging, Exceptions, Validierung, Krypto-Helfer, Mail-Utils
-- `tests` – Unit-Tests für alle Services (60 Tests)
+- `tests` – Unit-Tests für alle Services (76 Tests)
+- `install.sh` / `install.ps1` / `install.bat` – Installations-Skripte für Linux/macOS/Windows
 
 ### Analyse-Regeln: Bedingungsformat
 
@@ -96,11 +117,19 @@ Jede Regel hat genau eine Bedingung, gespeichert als JSON in `analysis_rules.con
 
 ## Design-Entscheidungen
 
-Gemäß Plan-Abschnitt 16 ("Dependencies Minimieren") wurden Charts und PDF-Export bewusst ohne
-neue Abhängigkeiten umgesetzt: die Kreis-/Balkendiagramme sind selbst geschriebene
+Gemäß Plan-Abschnitt 16 ("Dependencies Minimieren") wurden Charts, PDF-Export und der Chat
+bewusst ohne neue Abhängigkeiten umgesetzt: die Kreis-/Balkendiagramme sind selbst geschriebene
 QPainter-Widgets (`ui/widgets/charts.py`), der PDF-Export nutzt Qt's eingebauten `QPdfWriter`,
-und die Spracherkennung ist eine leichte Stopword-Heuristik statt einer ML-Bibliothek.
-Alle bisherigen Requirements (`requirements.txt`) sind unverändert ausreichend.
+die Spracherkennung ist eine leichte Stopword-Heuristik statt einer ML-Bibliothek, und der
+Chat-Assistent nutzt einen selbst geschriebenen Tool-Calling-Loop auf Basis des bestehenden
+`/api/generate`-Endpunkts (`chat_service.py`) statt eines separaten Function-Calling-APIs —
+funktioniert dadurch mit jedem lokalen Ollama-Modell, nicht nur mit Modellen, die natives
+Tool-Calling unterstützen. Alle bisherigen Requirements (`requirements.txt`) sind unverändert
+ausreichend.
+
+Bestehende Datenbanken werden beim ersten Start automatisch migriert (`_migrate_schema` in
+`models/database.py`, z. B. die neue `folder`-Spalte per `ALTER TABLE`) — kein manueller Schritt
+nötig, kein Alembic für diese einfachen Änderungen erforderlich.
 
 ## Offene Punkte (nächste Phasen)
 

@@ -1,13 +1,17 @@
-"""Settings dialog: Mail account, Ollama configuration, analysis rules, UI preferences."""
+"""Settings view: Mail account, Ollama configuration, analysis rules, integrations, UI.
+
+Embedded as the "Einstellungen" tab in MainWindow (not a popup dialog) with an explicit
+"Speichern" button — settings_saved fires with the mail/Ollama values so MainWindow can
+create/update the account.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QLabel,
@@ -90,6 +94,14 @@ class MailSettingsTab(QWidget):
             password=self.password_edit.text(),
         )
 
+    def load_values(self, values: MailSettingsValues) -> None:
+        self.imap_server_edit.setText(values.imap_server)
+        self.imap_port_spin.setValue(values.imap_port)
+        self.smtp_server_edit.setText(values.smtp_server)
+        self.smtp_port_spin.setValue(values.smtp_port)
+        self.email_edit.setText(values.email_address)
+        self.password_edit.setText(values.password)
+
     def _test_connection(self) -> None:
         values = self.values()
         try:
@@ -151,6 +163,12 @@ class OllamaSettingsTab(QWidget):
             max_tokens=self.max_tokens_spin.value(),
         )
 
+    def load_values(self, values: OllamaSettingsValues) -> None:
+        self.url_edit.setText(values.ollama_url)
+        self.model_combo.setCurrentText(values.ollama_model)
+        self.temperature_spin.setValue(values.temperature)
+        self.max_tokens_spin.setValue(values.max_tokens)
+
     def _service(self) -> OllamaService:
         return OllamaService(base_url=self.url_edit.text().strip())
 
@@ -171,48 +189,61 @@ class OllamaSettingsTab(QWidget):
             self.status_label.setText("Status: ❌ Ollama nicht erreichbar")
 
 
-class SettingsDialog(QDialog):
-    """Tabbed settings dialog: Mail, Ollama, Analyse-Regeln, UI."""
+class SettingsView(QWidget):
+    """Tabbed settings: Mail, Ollama, Analyse-Regeln, Integrationen, UI — with a Speichern-Button."""
 
-    def __init__(self, parent=None, storage: StorageService | None = None, user_id: int | None = None):
+    settings_saved = pyqtSignal()
+
+    def __init__(self, storage: StorageService, user_id: int | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Einstellungen")
-        self.resize(520, 460)
+        self.storage = storage
+        self.user_id = user_id
 
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
 
         self.mail_tab = MailSettingsTab()
         self.ollama_tab = OllamaSettingsTab()
+        self.rules_tab = AnalysisRulesTab(storage, user_id)
+        self.integrations_tab = IntegrationsTab(storage, user_id)
+        self.ui_tab = UiSettingsTab(storage, user_id)
 
         self.tabs.addTab(self.mail_tab, "Mail-Einstellungen")
         self.tabs.addTab(self.ollama_tab, "Ollama-Konfiguration")
-
-        if storage is not None:
-            self.rules_tab = AnalysisRulesTab(storage, user_id)
-            self.integrations_tab = IntegrationsTab(storage, user_id)
-            self.ui_tab = UiSettingsTab(storage, user_id)
-        else:
-            self.rules_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
-            self.integrations_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
-            self.ui_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
         self.tabs.addTab(self.rules_tab, "Analyse-Regeln")
         self.tabs.addTab(self.integrations_tab, "Integrationen")
         self.tabs.addTab(self.ui_tab, "UI-Einstellungen")
 
         layout.addWidget(self.tabs)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._on_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        save_row = QVBoxLayout()
+        self.save_button = QPushButton("Speichern")
+        self.save_button.clicked.connect(self._on_save)
+        self.status_label = QLabel("")
+        save_row.addWidget(self.save_button)
+        save_row.addWidget(self.status_label)
+        layout.addLayout(save_row)
 
-    def _on_accept(self) -> None:
-        if isinstance(self.integrations_tab, IntegrationsTab):
-            self.integrations_tab.save()
-        if isinstance(self.ui_tab, UiSettingsTab):
-            self.ui_tab.save()
-        self.accept()
+    def set_user_id(self, user_id: int) -> None:
+        self.user_id = user_id
+        self.rules_tab.set_user_id(user_id)
+        self.integrations_tab.set_user_id(user_id)
+        self.ui_tab.set_user_id(user_id)
+
+    def load_from_account(
+        self,
+        mail_values: MailSettingsValues,
+        ollama_values: OllamaSettingsValues,
+    ) -> None:
+        self.mail_tab.load_values(mail_values)
+        self.ollama_tab.load_values(ollama_values)
+
+    def _on_save(self) -> None:
+        self.status_label.setText("")
+        self.settings_saved.emit()
+
+    def show_status(self, text: str) -> None:
+        self.status_label.setText(text)
 
     def mail_values(self) -> MailSettingsValues:
         return self.mail_tab.values()

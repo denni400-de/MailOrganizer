@@ -1,4 +1,4 @@
-"""Dialog for comparing multiple Ollama models on the same set of recent mails."""
+"""Tab view for comparing multiple Ollama models on the same set of recent mails."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import json
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -21,6 +19,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from mailorganizer.models.mail import MailData
@@ -30,16 +29,17 @@ from mailorganizer.services.storage_service import StorageService
 from mailorganizer.utils.exceptions import MailOrganizerError
 
 
-class BenchmarkDialog(QDialog):
-    """Model-Benchmarking (plan 8.4): select models + a sample size, run, compare results."""
+class BenchmarkView(QWidget):
+    """Model-Benchmarking (plan 8.4): select models + a sample size, run, compare results.
 
-    def __init__(self, storage: StorageService, user_id: int, ollama_url: str, parent=None):
+    The Ollama URL is re-read from the user's saved Ollama config each run, so changes made
+    in the Einstellungen tab take effect without recreating this view.
+    """
+
+    def __init__(self, storage: StorageService, parent=None):
         super().__init__(parent)
         self.storage = storage
-        self.user_id = user_id
-        self.ollama_url = ollama_url
-        self.setWindowTitle("Ollama-Model-Benchmarking")
-        self.resize(560, 480)
+        self.user_id: int | None = None
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Zu vergleichende Modelle:"))
@@ -69,20 +69,24 @@ class BenchmarkDialog(QDialog):
         self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.results_table)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
         self.run_button = QPushButton("Benchmark starten")
         self.run_button.clicked.connect(self._run_benchmark)
-        buttons.addButton(self.run_button, QDialogButtonBox.ButtonRole.ActionRole)
-        layout.addWidget(buttons)
+        layout.addWidget(self.run_button)
 
+    def set_user_id(self, user_id: int) -> None:
+        self.user_id = user_id
         self._load_models()
+
+    def _current_ollama_url(self) -> str:
+        if self.user_id is None:
+            return "http://localhost:11434"
+        config = self.storage.get_ollama_config(self.user_id)
+        return config.ollama_url if config else "http://localhost:11434"
 
     def _load_models(self) -> None:
         self.models_list.clear()
         try:
-            models = OllamaService(base_url=self.ollama_url).list_models()
+            models = OllamaService(base_url=self._current_ollama_url()).list_models()
         except MailOrganizerError as exc:
             QMessageBox.warning(self, "Ollama nicht erreichbar", str(exc))
             return
@@ -101,6 +105,8 @@ class BenchmarkDialog(QDialog):
         return selected
 
     def _run_benchmark(self) -> None:
+        if self.user_id is None:
+            return
         models = self._selected_models()
         if not models:
             QMessageBox.information(self, "Hinweis", "Bitte mindestens ein Modell auswählen.")
@@ -130,7 +136,7 @@ class BenchmarkDialog(QDialog):
         progress.show()
 
         try:
-            ollama_service = OllamaService(base_url=self.ollama_url)
+            ollama_service = OllamaService(base_url=self._current_ollama_url())
             report = BenchmarkService(ollama_service).run_benchmark(mails, models)
         finally:
             progress.close()
