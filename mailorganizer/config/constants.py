@@ -21,6 +21,13 @@ CATEGORIES = ["work", "personal", "bills", "news", "shopping", "spam", "other"]
 
 RECOMMENDED_ACTIONS = ["archive", "flag", "delete", "reply", "read_later"]
 
+# Actions available to the user-defined analysis rules engine (section 8.1 of the plan)
+RULE_ACTIONS = ["archive", "delete", "flag", "category"]
+
+RULE_FIELDS = ["sender", "subject", "category", "importance_score", "sentiment", "keywords"]
+
+RULE_OPERATORS = ["contains", "equals", "gt", "lt", "gte", "lte"]
+
 SENTIMENTS = ["positive", "neutral", "negative"]
 
 IMPORTANCE_MIN = 1

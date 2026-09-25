@@ -20,7 +20,9 @@ from mailorganizer.models.database import Mail
 from mailorganizer.services.analysis_service import AnalysisService
 from mailorganizer.services.mail_service import MailAccountCredentials, MailService
 from mailorganizer.services.ollama_service import OllamaService
+from mailorganizer.services.rules_service import RulesEngine
 from mailorganizer.services.storage_service import StorageService
+from mailorganizer.ui.widgets.cleanup_dialog import CleanupDialog
 from mailorganizer.ui.widgets.mail_list import MailListWidget
 from mailorganizer.ui.widgets.preview_panel import PreviewPanel
 from mailorganizer.ui.widgets.settings_panel import SettingsDialog
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.mail_list.mail_selected.connect(self._on_mail_selected)
+        self.mail_list.archive_sender_requested.connect(self._on_archive_sender_requested)
 
         self.status_bar_widget = AppStatusBar()
         self.setStatusBar(self.status_bar_widget)
@@ -88,7 +91,10 @@ class MainWindow(QMainWindow):
         analyze_btn = QPushButton("🧠 Analysieren")
         analyze_btn.clicked.connect(self.analyze_new_mails)
 
-        for btn in (settings_btn, sync_btn, analyze_btn):
+        cleanup_btn = QPushButton("🗑️ Cleanup")
+        cleanup_btn.clicked.connect(self.open_cleanup)
+
+        for btn in (settings_btn, sync_btn, analyze_btn, cleanup_btn):
             layout.addWidget(btn)
         layout.addStretch(1)
 
@@ -129,9 +135,17 @@ class MainWindow(QMainWindow):
     # -- Settings ---------------------------------------------------------
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self)
+        dialog = SettingsDialog(self, storage=self.storage, user_id=self.user_id)
         if dialog.exec():
             self._apply_settings(dialog)
+
+    def open_cleanup(self) -> None:
+        if self.user_id is None:
+            QMessageBox.information(self, "Hinweis", "Bitte zuerst ein Mail-Konto einrichten.")
+            return
+        dialog = CleanupDialog(self.storage, self.user_id, self)
+        if dialog.exec():
+            self._refresh_mail_list(sort_by_importance=dialog.sort_by_importance)
 
     def _apply_settings(self, dialog: SettingsDialog) -> None:
         mail_values = dialog.mail_values()
@@ -236,17 +250,36 @@ class MainWindow(QMainWindow):
                 logger.error("Analysis failed for mail %s: %s", db_mail.id, exc)
 
         progress.setValue(len(db_mails))
+
+        rules_engine = RulesEngine(self.storage)
+        affected = rules_engine.run_for_user(self.user_id)
+        if affected:
+            logger.info("Analyse-Regeln angewendet auf %s Mails", affected)
+
         self._refresh_mail_list()
 
     # -- List / preview -----------------------------------------------
 
-    def _refresh_mail_list(self) -> None:
+    def _refresh_mail_list(self, sort_by_importance: bool = False) -> None:
         if self.user_id is None:
             return
         mails = self.storage.list_mails(self.user_id)
+        if sort_by_importance:
+            mails = sorted(
+                mails,
+                key=lambda m: m.analysis.importance_score if m.analysis else 0,
+                reverse=True,
+            )
         self.mail_list.set_mails(mails)
         unread = sum(1 for m in mails if not m.is_read)
         self.status_bar_widget.set_counts(len(mails), unread)
+
+    def _on_archive_sender_requested(self, sender: str) -> None:
+        if self.user_id is None:
+            return
+        count = self.storage.archive_mails_by_sender(self.user_id, sender)
+        if count:
+            self._refresh_mail_list()
 
     def _on_mail_selected(self, mail_id: int) -> None:
         from sqlalchemy import select

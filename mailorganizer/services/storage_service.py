@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -10,7 +11,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, sessionmaker
 
 from mailorganizer.models.analysis import AnalysisResult
-from mailorganizer.models.database import Mail, MailAnalysis, OllamaConfig, Setting, User, create_all, init_engine
+from mailorganizer.models.database import (
+    AnalysisRule,
+    Mail,
+    MailAnalysis,
+    OllamaConfig,
+    Setting,
+    User,
+    create_all,
+    init_engine,
+)
 from mailorganizer.models.mail import MailData
 from mailorganizer.utils.exceptions import StorageError
 from mailorganizer.utils.logger import get_logger
@@ -72,7 +82,9 @@ class StorageService:
         """Insert a mail if it doesn't already exist (by message_id), else return the existing row."""
         with self.session() as session:
             try:
-                existing = session.scalar(select(Mail).where(Mail.message_id == mail.message_id))
+                existing = session.scalar(
+                    select(Mail).options(joinedload(Mail.analysis)).where(Mail.message_id == mail.message_id)
+                )
                 if existing is not None:
                     return existing
 
@@ -94,6 +106,7 @@ class StorageService:
                 session.add(row)
                 session.commit()
                 session.refresh(row)
+                _ = row.analysis  # load the relationship (always None for a new row) before the session closes
                 return row
             except SQLAlchemyError as exc:
                 session.rollback()
@@ -143,6 +156,105 @@ class StorageService:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise StorageError(f"Failed to update flags for mail {mail_id}: {exc}") from exc
+
+    def hard_delete_mail(self, mail_id: int) -> None:
+        """Permanently remove a mail row (and its analysis, via cascade) from the database."""
+        with self.session() as session:
+            try:
+                mail = session.get(Mail, mail_id)
+                if mail is None:
+                    return
+                session.delete(mail)
+                session.commit()
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to delete mail {mail_id}: {exc}") from exc
+
+    def list_mails_for_cleanup(self, user_id: int) -> list[Mail]:
+        """Return all mails for a user (including archived/spam), with analysis eager-loaded."""
+        with self.session() as session:
+            try:
+                stmt = select(Mail).options(joinedload(Mail.analysis)).where(Mail.user_id == user_id)
+                stmt = stmt.order_by(Mail.received_at.desc())
+                return list(session.scalars(stmt))
+            except SQLAlchemyError as exc:
+                raise StorageError(f"Failed to list mails for cleanup: {exc}") from exc
+
+    def archive_mails_older_than(self, user_id: int, days: int) -> int:
+        """Mark all non-archived mails older than `days` as archived. Returns the count affected."""
+        cutoff = datetime.now() - timedelta(days=days)
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(
+                    Mail.user_id == user_id,
+                    Mail.is_archived.is_(False),
+                    Mail.received_at < cutoff,
+                )
+                mails = list(session.scalars(stmt))
+                for mail in mails:
+                    mail.is_archived = True
+                session.commit()
+                return len(mails)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to archive old mails: {exc}") from exc
+
+    def archive_mails_by_sender(self, user_id: int, sender: str) -> int:
+        """Mark all non-archived mails from `sender` as archived. Returns the count affected."""
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(
+                    Mail.user_id == user_id,
+                    Mail.sender == sender,
+                    Mail.is_archived.is_(False),
+                )
+                mails = list(session.scalars(stmt))
+                for mail in mails:
+                    mail.is_archived = True
+                session.commit()
+                return len(mails)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to archive mails from {sender}: {exc}") from exc
+
+    def delete_spam_mails(self, user_id: int) -> int:
+        """Permanently delete all mails flagged as spam. Returns the count deleted."""
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(Mail.user_id == user_id, Mail.is_spam.is_(True))
+                mails = list(session.scalars(stmt))
+                for mail in mails:
+                    session.delete(mail)
+                session.commit()
+                return len(mails)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to delete spam mails: {exc}") from exc
+
+    def delete_duplicate_mails(self, user_id: int) -> int:
+        """Delete duplicate mails (same sender+subject+received_at), keeping the newest by id.
+
+        Returns the count deleted.
+        """
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(Mail.user_id == user_id).order_by(Mail.id.desc())
+                mails = list(session.scalars(stmt))
+                seen: set[tuple[str, str, datetime]] = set()
+                duplicates: list[Mail] = []
+                for mail in mails:
+                    key = (mail.sender, mail.subject, mail.received_at)
+                    if key in seen:
+                        duplicates.append(mail)
+                    else:
+                        seen.add(key)
+                for mail in duplicates:
+                    session.delete(mail)
+                session.commit()
+                return len(duplicates)
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to delete duplicate mails: {exc}") from exc
 
     # -- Analysis --------------------------------------------------------
 
@@ -221,3 +333,86 @@ class StorageService:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise StorageError(f"Failed to save Ollama config: {exc}") from exc
+
+    # -- Analysis rules ----------------------------------------------------
+
+    def list_rules(self, user_id: int, active_only: bool = False) -> list[AnalysisRule]:
+        with self.session() as session:
+            try:
+                stmt = select(AnalysisRule).where(AnalysisRule.user_id == user_id)
+                if active_only:
+                    stmt = stmt.where(AnalysisRule.is_active.is_(True))
+                stmt = stmt.order_by(AnalysisRule.priority.asc(), AnalysisRule.id.asc())
+                return list(session.scalars(stmt))
+            except SQLAlchemyError as exc:
+                raise StorageError(f"Failed to list rules: {exc}") from exc
+
+    def create_rule(
+        self,
+        user_id: int,
+        name: str,
+        condition: str,
+        action: str,
+        priority: int = 1,
+        is_active: bool = True,
+    ) -> AnalysisRule:
+        with self.session() as session:
+            try:
+                rule = AnalysisRule(
+                    user_id=user_id,
+                    name=name,
+                    condition=condition,
+                    action=action,
+                    priority=priority,
+                    is_active=is_active,
+                )
+                session.add(rule)
+                session.commit()
+                session.refresh(rule)
+                return rule
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to create rule: {exc}") from exc
+
+    def update_rule(
+        self,
+        rule_id: int,
+        name: str | None = None,
+        condition: str | None = None,
+        action: str | None = None,
+        priority: int | None = None,
+        is_active: bool | None = None,
+    ) -> AnalysisRule:
+        with self.session() as session:
+            try:
+                rule = session.get(AnalysisRule, rule_id)
+                if rule is None:
+                    raise StorageError(f"Rule {rule_id} not found")
+                if name is not None:
+                    rule.name = name
+                if condition is not None:
+                    rule.condition = condition
+                if action is not None:
+                    rule.action = action
+                if priority is not None:
+                    rule.priority = priority
+                if is_active is not None:
+                    rule.is_active = is_active
+                session.commit()
+                session.refresh(rule)
+                return rule
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to update rule {rule_id}: {exc}") from exc
+
+    def delete_rule(self, rule_id: int) -> None:
+        with self.session() as session:
+            try:
+                rule = session.get(AnalysisRule, rule_id)
+                if rule is None:
+                    return
+                session.delete(rule)
+                session.commit()
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise StorageError(f"Failed to delete rule {rule_id}: {exc}") from exc

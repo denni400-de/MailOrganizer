@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
 
 from mailorganizer.services.mail_service import MailAccountCredentials, MailService
 from mailorganizer.services.ollama_service import OllamaService
+from mailorganizer.services.storage_service import StorageService
+from mailorganizer.ui.widgets.rules_panel import AnalysisRulesTab
 from mailorganizer.utils.exceptions import MailOrganizerError
 
 
@@ -168,24 +170,28 @@ class OllamaSettingsTab(QWidget):
 
 
 class SettingsDialog(QDialog):
-    """Tabbed settings dialog: Mail, Ollama, Analyse-Regeln (Platzhalter), UI."""
+    """Tabbed settings dialog: Mail, Ollama, Analyse-Regeln, UI."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, storage: StorageService | None = None, user_id: int | None = None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
-        self.resize(480, 420)
+        self.resize(520, 460)
 
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
 
         self.mail_tab = MailSettingsTab()
         self.ollama_tab = OllamaSettingsTab()
-        self.rules_placeholder = QLabel("Analyse-Regeln: kommt in einer späteren Version.")
         self.ui_placeholder = QLabel("UI-Einstellungen: kommt in einer späteren Version.")
 
         self.tabs.addTab(self.mail_tab, "Mail-Einstellungen")
         self.tabs.addTab(self.ollama_tab, "Ollama-Konfiguration")
-        self.tabs.addTab(self.rules_placeholder, "Analyse-Regeln")
+
+        if storage is not None:
+            self.rules_tab = AnalysisRulesTab(storage, user_id)
+        else:
+            self.rules_tab = QLabel("Bitte zuerst Mail-Konto speichern.")
+        self.tabs.addTab(self.rules_tab, "Analyse-Regeln")
         self.tabs.addTab(self.ui_placeholder, "UI-Einstellungen")
 
         layout.addWidget(self.tabs)
