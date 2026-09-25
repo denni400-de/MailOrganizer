@@ -13,6 +13,40 @@ echo  Mail Organizer - Start
 echo ================================
 echo.
 
+REM -- Windows "Long Path"-Unterstuetzung pruefen/aktivieren ---------------
+REM PyQt6 enthaelt sehr tief verschachtelte Qt6-QML-Dateien. Kombiniert mit
+REM einem langen Projektpfad (z.B. verschachtelte Download-Ordner) ueberschreitet
+REM der volle Pfad leicht Windows' klassisches 260-Zeichen-Limit, und die
+REM Installation bricht mit "No such file or directory" ab - das aeussert sich
+REM spaeter als "ModuleNotFoundError: No module named 'PyQt6.QtWidgets'", weil
+REM nur ein Teil der Pakete tatsaechlich geschrieben wurde.
+set "LONGPATHS_VALUE="
+for /f "tokens=3" %%V in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2^>nul ^| findstr /i LongPathsEnabled') do set "LONGPATHS_VALUE=%%V"
+
+if not "!LONGPATHS_VALUE!"=="0x1" (
+    echo Windows "Long Path"-Unterstuetzung ist nicht aktiviert - das fuehrt bei
+    echo PyQt6 haeufig zu abgebrochenen Installationen. Versuche sie zu aktivieren
+    echo ^(erfordert Administratorrechte^) ...
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
+    if not !errorlevel!==0 (
+        echo Keine Administratorrechte in diesem Fenster - oeffne Bestaetigungsdialog ...
+        powershell -NoProfile -Command "Start-Process reg -ArgumentList 'add','HKLM\SYSTEM\CurrentControlSet\Control\FileSystem','/v','LongPathsEnabled','/t','REG_DWORD','/d','1','/f' -Verb RunAs -Wait" >nul 2>&1
+    )
+    set "LONGPATHS_VALUE="
+    for /f "tokens=3" %%V in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2^>nul ^| findstr /i LongPathsEnabled') do set "LONGPATHS_VALUE=%%V"
+    if "!LONGPATHS_VALUE!"=="0x1" (
+        echo Long Paths aktiviert.
+    ) else (
+        echo.
+        echo Long Paths konnten nicht aktiviert werden ^(Dialog abgebrochen oder
+        echo keine Administratorrechte verfuegbar^). Falls die Installation gleich
+        echo fehlschlaegt: entweder als Administrator erneut versuchen, oder den
+        echo Projektordner an einen kurzen Pfad verschieben, z.B. nach C:\MailOrganizer
+        echo ^(der aktuelle Pfad ist sehr lang^).
+    )
+    echo.
+)
+
 REM -- Python finden ------------------------------------------------------
 set "PYTHON_LAUNCHER="
 where py >nul 2>&1
@@ -58,7 +92,14 @@ if not %errorlevel%==0 (
     if not !errorlevel!==0 (
         echo.
         echo Fehler: PyQt6 laesst sich weiterhin nicht laden.
-        echo Moegliche Ursachen:
+        echo Wahrscheinlichste Ursache: der Projektpfad ist zu lang
+        echo ^(PyQt6 enthaelt sehr tief verschachtelte Dateien unter Qt6\qml\...^).
+        echo Falls oben eine Meldung wie "No such file or directory" oder
+        echo "Long Path" auftauchte: entweder als Administrator erneut starten
+        echo ^(damit Long Paths automatisch aktiviert werden koennen^), oder den
+        echo Projektordner an einen kurzen Pfad verschieben, z.B. C:\MailOrganizer.
+        echo.
+        echo Weitere moegliche Ursachen:
         echo  - Antivirus/Windows Defender blockiert Dateien in .venv\Lib\site-packages\PyQt6
         echo  - Ein Conda/Anaconda-Prompt ueberschreibt PYTHONPATH im Hintergrund
         echo.

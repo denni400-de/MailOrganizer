@@ -71,8 +71,16 @@ mit generiertem Verschlüsselungs-Schlüssel und zeigt an, wie die App gestartet
 jedem Start, ob die virtuelle Umgebung und insbesondere `PyQt6.QtWidgets` wirklich importierbar
 sind, und repariert die Installation automatisch (deinstalliert/installiert PyQt6 neu), falls
 nicht — das behebt u. a. den häufigen Windows-Fehler `ModuleNotFoundError: No module named
-'PyQt6.QtWidgets'` (unvollständige Installation, oft durch Antivirus-Eingriffe während `pip
-install`). Bei einem Fehler bleibt das Fenster offen, damit die Meldung lesbar bleibt.
+'PyQt6.QtWidgets'`.
+
+Häufigste Ursache dafür: Windows' klassisches 260-Zeichen-Pfadlimit. PyQt6 enthält sehr tief
+verschachtelte Qt6-QML-Dateien; kombiniert mit einem langen Projektpfad (z. B. verschachtelte
+Download-Ordner) bricht die Installation einzelner Dateien lautlos ab. `start.bat` prüft daher
+vor der Installation, ob Windows' „Long Path“-Unterstützung aktiviert ist, und versucht sie bei
+Bedarf automatisch zu aktivieren (Registry-Eintrag, per UAC-Dialog falls nötig). Falls das nicht
+möglich ist (keine Admin-Rechte), hilft ersatzweise: Projektordner an einen kurzen Pfad
+verschieben, z. B. nach `C:\MailOrganizer`. Bei einem Fehler bleibt das Fenster offen, damit die
+Meldung lesbar bleibt.
 
 Manuell geht es natürlich auch:
 
