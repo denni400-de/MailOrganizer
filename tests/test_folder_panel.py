@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from mailorganizer.ui.widgets.folder_panel import _build_tree, _detect_delimiter
+from mailorganizer.ui.widgets.folder_panel import FolderPanel, _build_tree, _detect_delimiter
 
 
 def test_detect_delimiter_prefers_slash():
@@ -52,3 +52,37 @@ def test_build_tree_flat_when_no_delimiter(qapp):
     assert tree.topLevelItemCount() == 3
     for i in range(3):
         assert tree.topLevelItem(i).childCount() == 0
+
+
+def test_structural_node_is_not_selectable(qapp):
+    """Regression test: a grouping-only path segment (e.g. "A" when only "A/B" and "A/C"
+    are real IMAP folders) must never be selectable as if it were "Alle Ordner"."""
+    from PyQt6.QtCore import Qt
+
+    panel = FolderPanel()
+    panel.set_folders(["A/B", "A/C"])
+
+    a_item = panel.tree.topLevelItem(1)
+    assert a_item.text(0) == "A"
+    assert not (a_item.flags() & Qt.ItemFlag.ItemIsSelectable)
+
+
+def test_structural_node_never_reports_as_all_folders(qapp):
+    from mailorganizer.ui.widgets.folder_panel import ALL_FOLDERS
+
+    panel = FolderPanel()
+    panel.set_folders(["A/B", "A/C"])
+
+    a_item = panel.tree.topLevelItem(1)
+    b_item = a_item.child(0)
+    panel.tree.setCurrentItem(b_item)
+
+    received = []
+    panel.folder_selected.connect(received.append)
+    # Force `current` onto the structural node directly, bypassing the selectable flag,
+    # to defensively verify the fallback guard in _on_selection_changed too.
+    panel.tree.setCurrentItem(a_item)
+
+    assert panel.selected_folder() == "A/B"
+    assert "" not in received
+    assert panel.tree.topLevelItem(0).text(0) == ALL_FOLDERS

@@ -37,7 +37,10 @@ def _build_tree(tree: QTreeWidget, folders: list[str]) -> None:
             # Only a node whose full path matches an actual IMAP folder name is selectable
             # as a sync/filter target — purely structural parent segments are just for grouping.
             full_name = delimiter.join(path) if delimiter else path[0]
-            item.setData(0, _FOLDER_ROLE, full_name if full_name in folders else None)
+            is_real_folder = full_name in folders
+            item.setData(0, _FOLDER_ROLE, full_name if is_real_folder else None)
+            if not is_real_folder:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             nodes[path] = item
 
     tree.expandAll()
@@ -92,10 +95,18 @@ class FolderPanel(QWidget):
         if item is None:
             return ""
         value = item.data(0, _FOLDER_ROLE)
-        return value or ""
+        return value if value is not None else ""
 
-    def _on_selection_changed(self, current: QTreeWidgetItem, _previous: QTreeWidgetItem) -> None:
+    def _on_selection_changed(self, current: QTreeWidgetItem, previous: QTreeWidgetItem) -> None:
         if current is None:
             return
         value = current.data(0, _FOLDER_ROLE)
-        self.folder_selected.emit(value or "")
+        if value is None:
+            # Structural grouping node (not a real, selectable folder) — defensively refuse to
+            # treat it as "Alle Ordner" (both would otherwise read as falsy). Revert to whatever
+            # was selected before, if anything; the ItemIsSelectable flag already keeps mouse
+            # clicks from landing here, this only guards other ways `current` could change.
+            if previous is not None:
+                self.tree.setCurrentItem(previous)
+            return
+        self.folder_selected.emit(value)

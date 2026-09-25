@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import threading
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -140,6 +140,7 @@ class MainWindow(QMainWindow):
         self.storage = StorageService(self.settings.resolved_database_path)
         self.user_id: int | None = None
         self.mail_credentials: MailAccountCredentials | None = None
+        self._sync_in_progress = False
 
         self._build_ui()
         self._build_toolbar()
@@ -336,6 +337,13 @@ class MainWindow(QMainWindow):
     def sync_mails(self) -> None:
         if self.mail_credentials is None or self.user_id is None:
             return
+        if self._sync_in_progress:
+            # The periodic sync_timer can fire again (or the user can click Sync, or a
+            # settings save can trigger one) while a previous sync is still running on its
+            # background thread — disabling the toolbar button doesn't stop the QTimer, so
+            # this flag is the actual guard against two concurrent _sync_task runs.
+            return
+        self._sync_in_progress = True
         folder = self.folder_panel.selected_folder() or "INBOX"
         self._set_actions_enabled(False)
         self.status_bar_widget.start_busy(f"Synchronisiere „{folder}“ …")
@@ -350,12 +358,14 @@ class MainWindow(QMainWindow):
         )
 
     def _on_sync_success(self, _count: int) -> None:
+        self._sync_in_progress = False
         self.status_bar_widget.set_connected(True)
         self.status_bar_widget.stop_busy()
         self._set_actions_enabled(True)
         self._refresh_mail_list()
 
     def _on_sync_error(self, message: str) -> None:
+        self._sync_in_progress = False
         self.status_bar_widget.set_connected(False)
         self.status_bar_widget.stop_busy()
         self._set_actions_enabled(True)
@@ -471,3 +481,16 @@ class MainWindow(QMainWindow):
         with self.storage.session() as session:
             mail = session.scalar(select(Mail).options(joinedload(Mail.analysis)).where(Mail.id == mail_id))
             self.preview_panel.set_mail(mail)
+
+    # -- Shutdown -----------------------------------------------------
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # Closing the last window ends app.exec() (Qt's default quitOnLastWindowClosed),
+        # after which the interpreter starts tearing down. Any IMAP/Ollama call still running
+        # on the QThreadPool would keep executing through that teardown and could crash trying
+        # to touch now-invalid Python/Qt state — the same class of lifecycle bug already fixed
+        # once in workers.py, here at the process-exit boundary instead of the per-task one.
+        # Give in-flight work a bounded chance to finish cleanly before we let the app quit.
+        self.sync_timer.stop()
+        QThreadPool.globalInstance().waitForDone(10000)
+        super().closeEvent(event)

@@ -58,6 +58,7 @@ class ChatView(QWidget):
         self.user_id: int | None = None
         self.history: list[ChatMessage] = []
         self._result_mail_ids: list[int] = []
+        self._preview_request_id = 0
 
         outer_layout = QVBoxLayout(self)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -156,13 +157,26 @@ class ChatView(QWidget):
         self.send_button.setEnabled(True)
         self.status_label.setText("Hinweis: Die KI kann Mails suchen, zusammenfassen und auf Zuruf archivieren.")
 
+        collected_mails: list[dict] = []
+        seen_ids: set = set()
         for call in result.tool_calls:
             self._append(
                 f"<i>🔧 {_escape(call.tool)}({_escape(str(call.args))}) → "
                 f"{_escape(call.result_summary[:200])}{'…' if len(call.result_summary) > 200 else ''}</i>"
             )
             if call.tool in _LIST_TOOLS and isinstance(call.result, list):
-                self._show_results(call.result)
+                # A turn can make several list-returning tool calls (e.g. list_mails then
+                # search_mails) — accumulate all of them instead of letting the last call's
+                # results silently replace the earlier ones in the table.
+                for mail in call.result:
+                    mail_id = mail.get("id")
+                    if mail_id in seen_ids:
+                        continue
+                    seen_ids.add(mail_id)
+                    collected_mails.append(mail)
+
+        if collected_mails:
+            self._show_results(collected_mails)
 
         self._append(f"<b>Assistent:</b> {_escape(result.final_answer)}")
 
@@ -199,8 +213,20 @@ class ChatView(QWidget):
         mail_id = self._result_mail_ids[row]
         if mail_id is None:
             return
-        tools = ChatTools(self.storage, self.user_id)
-        mail = tools.get_mail(mail_id)
+
+        self._preview_request_id += 1
+        request_id = self._preview_request_id
+        self.preview_view.setPlainText("⏳ Lade …")
+        run_in_background(
+            ChatTools(self.storage, self.user_id).get_mail,
+            mail_id,
+            on_success=lambda mail: self._on_preview_loaded(request_id, mail),
+            on_error=lambda msg: self._on_preview_loaded(request_id, None),
+        )
+
+    def _on_preview_loaded(self, request_id: int, mail: dict | None) -> None:
+        if request_id != self._preview_request_id:
+            return  # a newer row was selected while this lookup was still running — discard
         if mail is None:
             self.preview_view.setPlainText("(nicht mehr verfügbar)")
             return
