@@ -112,6 +112,24 @@ python -m mailorganizer.main
 Beim ersten Start erklärt ein Willkommens-Dialog kurz die Einrichtung und führt in den
 Einstellungen-Tab (Mail-Konto + Ollama konfigurieren, dann "Speichern").
 
+## Eigenständige .exe / Binary bauen
+
+Für Nutzer ohne Python-Installation lässt sich eine eigenständige Anwendung bauen (via
+[PyInstaller](https://pyinstaller.org)):
+
+**Windows:** `build_exe.bat` doppelklicken.
+**Linux/macOS:** `./build_exe.sh`.
+
+Ergebnis: `dist/MailOrganizer/` mit `MailOrganizer.exe` (bzw. `MailOrganizer` auf Linux/macOS)
+darin. Diesen kompletten Ordner weitergeben/kopieren — nicht nur die ausführbare Datei allein,
+die danebenliegenden Dateien werden zur Laufzeit gebraucht. Für Ollama-Analyse wird weiterhin ein
+laufender lokaler Ollama-Server benötigt (die .exe selbst enthält kein Ollama).
+
+Das Skript nutzt eine eigene Build-Umgebung (`.venv-build`), verwendet `mailorganizer.spec`
+(steuert, welche Dateien mit eingepackt werden) und prüft unter Windows vorab die
+Long-Path-Unterstützung (siehe oben) — PyInstaller sammelt beim Bauen dieselben tief
+verschachtelten PyQt6-Dateien ein wie `pip install`.
+
 ## Tests
 
 ```bash
