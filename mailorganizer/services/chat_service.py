@@ -34,6 +34,7 @@ class ToolCallLog:
     tool: str
     args: dict
     result_summary: str
+    result: object = None  # the raw tool return value, e.g. list[dict] for list_mails/search_mails
 
 
 @dataclass
@@ -184,7 +185,9 @@ class ChatService:
             args = parsed.get("args") or {}
             result = self._call_tool(tool_name, args)
             result_text = json.dumps(result, ensure_ascii=False, default=str)
-            tool_calls.append(ToolCallLog(tool=tool_name, args=args, result_summary=result_text[:500]))
+            tool_calls.append(
+                ToolCallLog(tool=tool_name, args=args, result_summary=result_text[:500], result=result)
+            )
 
             transcript.append(ChatMessage(role="assistant", content=json.dumps(parsed, ensure_ascii=False)))
             transcript.append(ChatMessage(role="tool", content=f"Ergebnis von {tool_name}: {result_text}"))

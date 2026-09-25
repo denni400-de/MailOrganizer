@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QProgressDialog,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -23,17 +22,23 @@ from PyQt6.QtWidgets import (
 )
 
 from mailorganizer.models.mail import MailData
-from mailorganizer.services.benchmark_service import BenchmarkService
+from mailorganizer.services.benchmark_service import BenchmarkReport, BenchmarkService
 from mailorganizer.services.ollama_service import OllamaService
 from mailorganizer.services.storage_service import StorageService
-from mailorganizer.utils.exceptions import MailOrganizerError
+from mailorganizer.ui.workers import run_in_background
+
+
+def _run_benchmark_task(ollama_url: str, mails: list[MailData], models: list[str]) -> BenchmarkReport:
+    ollama_service = OllamaService(base_url=ollama_url)
+    return BenchmarkService(ollama_service).run_benchmark(mails, models)
 
 
 class BenchmarkView(QWidget):
     """Model-Benchmarking (plan 8.4): select models + a sample size, run, compare results.
 
     The Ollama URL is re-read from the user's saved Ollama config each run, so changes made
-    in the Einstellungen tab take effect without recreating this view.
+    in the Einstellungen tab take effect without recreating this view. Both model-listing and
+    the benchmark run happen on a background thread so the UI stays responsive.
     """
 
     def __init__(self, storage: StorageService, parent=None):
@@ -49,9 +54,9 @@ class BenchmarkView(QWidget):
         layout.addWidget(self.models_list)
 
         refresh_row = QHBoxLayout()
-        refresh_button = QPushButton("Modelle laden")
-        refresh_button.clicked.connect(self._load_models)
-        refresh_row.addWidget(refresh_button)
+        self.refresh_button = QPushButton("Modelle laden")
+        self.refresh_button.clicked.connect(self._load_models)
+        refresh_row.addWidget(self.refresh_button)
         refresh_row.addStretch(1)
         layout.addLayout(refresh_row)
 
@@ -73,6 +78,9 @@ class BenchmarkView(QWidget):
         self.run_button.clicked.connect(self._run_benchmark)
         layout.addWidget(self.run_button)
 
+        self.status_label = QLabel("")
+        layout.addWidget(self.status_label)
+
     def set_user_id(self, user_id: int) -> None:
         self.user_id = user_id
         self._load_models()
@@ -85,16 +93,27 @@ class BenchmarkView(QWidget):
 
     def _load_models(self) -> None:
         self.models_list.clear()
-        try:
-            models = OllamaService(base_url=self._current_ollama_url()).list_models()
-        except MailOrganizerError as exc:
-            QMessageBox.warning(self, "Ollama nicht erreichbar", str(exc))
-            return
+        self.refresh_button.setEnabled(False)
+        self.status_label.setText("⏳ Lade Modelle …")
+        run_in_background(
+            OllamaService(base_url=self._current_ollama_url()).list_models,
+            on_success=self._on_models_loaded,
+            on_error=self._on_models_error,
+        )
+
+    def _on_models_loaded(self, models: list[str]) -> None:
+        self.refresh_button.setEnabled(True)
+        self.status_label.setText("")
         for model in models:
             item = QListWidgetItem(model)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked)
             self.models_list.addItem(item)
+
+    def _on_models_error(self, message: str) -> None:
+        self.refresh_button.setEnabled(True)
+        self.status_label.setText("")
+        QMessageBox.warning(self, "Ollama nicht erreichbar", message)
 
     def _selected_models(self) -> list[str]:
         selected = []
@@ -130,17 +149,20 @@ class BenchmarkView(QWidget):
             for m in db_mails
         ]
 
-        progress = QProgressDialog("Benchmark läuft...", None, 0, 0, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setCancelButton(None)
-        progress.show()
+        self.run_button.setEnabled(False)
+        self.status_label.setText(f"⏳ Benchmark läuft ({len(models)} Modell(e) × {len(mails)} Mail(s)) …")
+        run_in_background(
+            _run_benchmark_task,
+            self._current_ollama_url(),
+            mails,
+            models,
+            on_success=self._on_benchmark_done,
+            on_error=self._on_benchmark_error,
+        )
 
-        try:
-            ollama_service = OllamaService(base_url=self._current_ollama_url())
-            report = BenchmarkService(ollama_service).run_benchmark(mails, models)
-        finally:
-            progress.close()
-
+    def _on_benchmark_done(self, report: BenchmarkReport) -> None:
+        self.run_button.setEnabled(True)
+        self.status_label.setText("")
         self.results_table.setRowCount(0)
         for summary in report.summaries:
             row = self.results_table.rowCount()
@@ -149,3 +171,8 @@ class BenchmarkView(QWidget):
             self.results_table.setItem(row, 1, QTableWidgetItem(str(summary.mails_analyzed)))
             self.results_table.setItem(row, 2, QTableWidgetItem(str(summary.errors)))
             self.results_table.setItem(row, 3, QTableWidgetItem(f"{summary.avg_processing_time_ms:.0f}"))
+
+    def _on_benchmark_error(self, message: str) -> None:
+        self.run_button.setEnabled(True)
+        self.status_label.setText("")
+        QMessageBox.warning(self, "Benchmark fehlgeschlagen", message)

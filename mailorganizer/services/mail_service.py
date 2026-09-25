@@ -58,7 +58,13 @@ class MailService:
     def connect(self) -> None:
         """Open and authenticate an IMAP connection."""
         try:
-            self._imap = IMAPClient(self.credentials.imap_server, port=self.credentials.imap_port, use_uid=True, ssl=True)
+            self._imap = IMAPClient(
+                self.credentials.imap_server,
+                port=self.credentials.imap_port,
+                use_uid=True,
+                ssl=True,
+                timeout=30,
+            )
             self._imap.login(self.credentials.email_address, self.credentials.password)
             logger.info("IMAP connected for %s", self.credentials.email_address)
         except (IMAPClientError, OSError) as exc:

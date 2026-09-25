@@ -1,17 +1,53 @@
-"""Folder sidebar for the Postfach tab: lists IMAP folders and lets the user manage them
-individually (select to filter + sync a single folder) instead of only ever seeing INBOX.
+"""Folder sidebar for the Postfach tab: an Outlook-style expandable tree instead of a flat
+list, so nested folders (e.g. "INBOX/Archiv/2024") are actually readable.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 ALL_FOLDERS = "Alle Ordner"
+_FOLDER_ROLE = Qt.ItemDataRole.UserRole
+
+
+def _detect_delimiter(folders: list[str]) -> str | None:
+    """Guess the IMAP hierarchy delimiter from the folder names themselves."""
+    for candidate in ("/", "."):
+        if any(candidate in name for name in folders):
+            return candidate
+    return None
+
+
+def _build_tree(tree: QTreeWidget, folders: list[str]) -> None:
+    delimiter = _detect_delimiter(folders)
+    nodes: dict[tuple[str, ...], QTreeWidgetItem] = {}
+
+    for name in folders:
+        parts = tuple(name.split(delimiter)) if delimiter else (name,)
+        for depth in range(1, len(parts) + 1):
+            path = parts[:depth]
+            if path in nodes:
+                continue
+            label = path[-1]
+            if depth == 1:
+                item = QTreeWidgetItem(tree, [label])
+            else:
+                item = QTreeWidgetItem(nodes[path[:-1]], [label])
+            # Only a node whose full path matches an actual IMAP folder name is selectable
+            # as a sync/filter target — purely structural parent segments are just for grouping.
+            full_name = delimiter.join(path) if delimiter else path[0]
+            is_real_folder = full_name in folders
+            item.setData(0, _FOLDER_ROLE, full_name if is_real_folder else None)
+            if not is_real_folder:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            nodes[path] = item
+
+    tree.expandAll()
 
 
 class FolderPanel(QWidget):
-    """Left-hand folder list. Emits folder_selected(name) where name is "" for "Alle Ordner"."""
+    """Left-hand folder tree. Emits folder_selected(name) where name is "" for "Alle Ordner"."""
 
     folder_selected = pyqtSignal(str)
 
@@ -20,32 +56,57 @@ class FolderPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.list_widget.currentTextChanged.connect(self._on_selection_changed)
-        layout.addWidget(self.list_widget)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.currentItemChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.tree)
 
-        self.setMaximumWidth(220)
+        self.setMaximumWidth(240)
 
     def set_folders(self, folders: list[str]) -> None:
-        """Populate the list with `folders` (e.g. from IMAP or the local DB), plus "Alle Ordner"."""
-        current = self.selected_folder()
-        self.list_widget.clear()
-        self.list_widget.addItem(QListWidgetItem(ALL_FOLDERS))
-        for name in folders:
-            self.list_widget.addItem(QListWidgetItem(name))
+        """Populate the tree with `folders` (e.g. from IMAP or the local DB), plus "Alle Ordner"."""
+        previous = self.selected_folder()
 
-        # Restore the previous selection if it still exists, else default to "Alle Ordner".
-        items = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
-        target = current if current in items else ALL_FOLDERS
-        self.list_widget.setCurrentRow(items.index(target) if target in items else 0)
+        self.tree.blockSignals(True)
+        self.tree.clear()
+        all_item = QTreeWidgetItem(self.tree, [ALL_FOLDERS])
+        all_item.setData(0, _FOLDER_ROLE, "")
+        _build_tree(self.tree, folders)
+        self.tree.blockSignals(False)
+
+        target = self._find_item(previous) if previous else all_item
+        self.tree.setCurrentItem(target or all_item)
+
+    def _find_item(self, folder_name: str) -> QTreeWidgetItem | None:
+        iterator_stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while iterator_stack:
+            item = iterator_stack.pop()
+            if item is None:
+                continue
+            if item.data(0, _FOLDER_ROLE) == folder_name:
+                return item
+            iterator_stack.extend(item.child(i) for i in range(item.childCount()))
+        return None
 
     def selected_folder(self) -> str:
-        """Return the selected folder name, or "" when "Alle Ordner" is selected."""
-        item = self.list_widget.currentItem()
-        if item is None or item.text() == ALL_FOLDERS:
+        """Return the selected folder's full IMAP name, or "" when "Alle Ordner" (or nothing
+        selectable) is selected."""
+        item = self.tree.currentItem()
+        if item is None:
             return ""
-        return item.text()
+        value = item.data(0, _FOLDER_ROLE)
+        return value if value is not None else ""
 
-    def _on_selection_changed(self, text: str) -> None:
-        self.folder_selected.emit("" if text in (ALL_FOLDERS, "") else text)
+    def _on_selection_changed(self, current: QTreeWidgetItem, previous: QTreeWidgetItem) -> None:
+        if current is None:
+            return
+        value = current.data(0, _FOLDER_ROLE)
+        if value is None:
+            # Structural grouping node (not a real, selectable folder) — defensively refuse to
+            # treat it as "Alle Ordner" (both would otherwise read as falsy). Revert to whatever
+            # was selected before, if anything; the ItemIsSelectable flag already keeps mouse
+            # clicks from landing here, this only guards other ways `current` could change.
+            if previous is not None:
+                self.tree.setCurrentItem(previous)
+            return
+        self.folder_selected.emit(value)

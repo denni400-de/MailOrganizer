@@ -29,7 +29,13 @@ from mailorganizer.services.storage_service import StorageService
 from mailorganizer.ui.widgets.integrations_panel import IntegrationsTab
 from mailorganizer.ui.widgets.rules_panel import AnalysisRulesTab
 from mailorganizer.ui.widgets.ui_settings_panel import UiSettingsTab
-from mailorganizer.utils.exceptions import MailOrganizerError
+from mailorganizer.ui.workers import run_in_background
+
+
+def _test_mail_connection(credentials: MailAccountCredentials) -> bool:
+    with MailService(credentials):
+        pass
+    return True
 
 
 @dataclass
@@ -113,11 +119,26 @@ class MailSettingsTab(QWidget):
                 smtp_server=values.smtp_server,
                 smtp_port=values.smtp_port,
             )
-            with MailService(credentials):
-                pass
-            self.test_result_label.setText("✅ Verbindung erfolgreich")
-        except MailOrganizerError as exc:
+        except Exception as exc:  # validation errors etc. — fail fast, no network call needed
             self.test_result_label.setText(f"❌ Fehler: {exc}")
+            return
+
+        self.test_button.setEnabled(False)
+        self.test_result_label.setText("⏳ Teste Verbindung …")
+        run_in_background(
+            _test_mail_connection,
+            credentials,
+            on_success=self._on_test_success,
+            on_error=self._on_test_error,
+        )
+
+    def _on_test_success(self, _result: bool) -> None:
+        self.test_button.setEnabled(True)
+        self.test_result_label.setText("✅ Verbindung erfolgreich")
+
+    def _on_test_error(self, message: str) -> None:
+        self.test_button.setEnabled(True)
+        self.test_result_label.setText(f"❌ Fehler: {message}")
 
 
 class OllamaSettingsTab(QWidget):
@@ -173,17 +194,36 @@ class OllamaSettingsTab(QWidget):
         return OllamaService(base_url=self.url_edit.text().strip())
 
     def _refresh_models(self) -> None:
-        try:
-            models = self._service().list_models()
-            self.model_combo.clear()
-            self.model_combo.addItems(models)
-            self.status_label.setText(f"Status: ✅ {len(models)} Modelle gefunden")
-        except MailOrganizerError as exc:
-            self.status_label.setText(f"Status: ❌ {exc}")
+        self.refresh_button.setEnabled(False)
+        self.status_label.setText("Status: ⏳ Lade Modelle …")
+        run_in_background(
+            self._service().list_models,
+            on_success=self._on_models_loaded,
+            on_error=self._on_models_error,
+        )
+
+    def _on_models_loaded(self, models: list[str]) -> None:
+        self.refresh_button.setEnabled(True)
+        self.model_combo.clear()
+        self.model_combo.addItems(models)
+        self.status_label.setText(f"Status: ✅ {len(models)} Modelle gefunden")
+
+    def _on_models_error(self, message: str) -> None:
+        self.refresh_button.setEnabled(True)
+        self.status_label.setText(f"Status: ❌ {message}")
 
     def _test_model(self) -> None:
-        service = self._service()
-        if service.is_available():
+        self.test_button.setEnabled(False)
+        self.status_label.setText("Status: ⏳ Teste Verbindung …")
+        run_in_background(
+            self._service().is_available,
+            on_success=self._on_model_test_done,
+            on_error=lambda msg: self._on_model_test_done(False),
+        )
+
+    def _on_model_test_done(self, available: bool) -> None:
+        self.test_button.setEnabled(True)
+        if available:
             self.status_label.setText("Status: ✅ Ollama erreichbar")
         else:
             self.status_label.setText("Status: ❌ Ollama nicht erreichbar")
@@ -200,6 +240,19 @@ class SettingsView(QWidget):
         self.user_id = user_id
 
         layout = QVBoxLayout(self)
+
+        self.banner = QLabel(
+            "👋 Noch kein Mail-Konto eingerichtet. Trage unten bei „Mail-Einstellungen“ deinen "
+            "IMAP-/SMTP-Zugang ein, bei „Ollama-Konfiguration“ deinen lokalen Ollama-Server, "
+            "und klicke dann auf „Speichern“."
+        )
+        self.banner.setWordWrap(True)
+        self.banner.setStyleSheet(
+            "background-color: #3b4252; color: #eceff4; padding: 8px; border-radius: 4px;"
+        )
+        self.banner.setVisible(user_id is None)
+        layout.addWidget(self.banner)
+
         self.tabs = QTabWidget()
 
         self.mail_tab = MailSettingsTab()
@@ -229,6 +282,7 @@ class SettingsView(QWidget):
         self.rules_tab.set_user_id(user_id)
         self.integrations_tab.set_user_id(user_id)
         self.ui_tab.set_user_id(user_id)
+        self.banner.setVisible(False)
 
     def load_from_account(
         self,
