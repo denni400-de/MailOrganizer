@@ -8,8 +8,10 @@ Advanced) aus [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 Ein Fenster, ein Tab pro Funktionsbereich (kein Popup-Wirrwarr, nichts wird abgeschnitten):
 
-- **📬 Postfach** – Ordner-Liste links (aus IMAP oder bereits synchronisierte Ordner), Mail-Liste,
-  Vorschau mit Analyse-Ergebnis. Rechtsklick auf eine Mail → "Alle Mails von diesem Sender archivieren".
+- **📬 Postfach** – Ordner-Baum links im Outlook-Stil (auf-/zuklappbar, aus IMAP oder bereits
+  synchronisierten Ordnern, verschachtelte Ordner wie „INBOX/Archiv/2024“ werden korrekt
+  eingerückt statt flach aufgelistet), Mail-Liste, Vorschau mit Analyse-Ergebnis. Rechtsklick auf
+  eine Mail → "Alle Mails von diesem Sender archivieren".
 - **📊 Bericht** – Top-Absender, Kategorie-Statistik (Kreisdiagramm), Wichtigkeits-Verteilung
   (Balkendiagramm), Aufräum-Vorschläge. Füllt den verfügbaren Platz (Scroll-Bereich, kein Abschneiden),
   PDF-Export über Qt's eingebauten `QPdfWriter` (keine zusätzliche Abhängigkeit).
@@ -21,12 +23,24 @@ Ein Fenster, ein Tab pro Funktionsbereich (kein Popup-Wirrwarr, nichts wird abge
 - **💬 Chat** – Konversation mit der KI, die per Tool-Calling im Postfach suchen, Mails
   zusammenfassen oder auf Zuruf archivieren kann (z. B. "Zeig mir alle Rechnungen von dieser
   Woche" oder "Archiviere die Werbemails von Amazon"). Tool-Aufrufe werden transparent im
-  Verlauf angezeigt (kursiv), bevor die eigentliche Antwort kommt.
+  Verlauf angezeigt (kursiv); Treffer aus `list_mails`/`search_mails` erscheinen zusätzlich als
+  anklickbare Tabelle mit Volltext-Vorschau rechts neben dem Chatverlauf.
 - **⚙️ Einstellungen** – Mail-Konto, Ollama, Analyse-Regeln, Integrationen, UI (Theme/Schriftgröße/
-  Sprache) als Unterreiter, mit explizitem Speichern-Button.
+  Sprache) als Unterreiter, mit explizitem Speichern-Button. Solange noch kein Konto eingerichtet
+  ist, erklärt ein Hinweis-Banner die nötigen Schritte; beim allerersten Start führt zusätzlich ein
+  Willkommens-Dialog kurz durch die Einrichtung.
 
 Eine schlanke Toolbar (🔄 Sync, 🧠 Analysieren, 📁 Ordner laden) bleibt immer sichtbar, da diese
 Aktionen unabhängig vom gerade offenen Tab gebraucht werden.
+
+### Reaktionsfähigkeit
+
+Alle netzwerk-/KI-lastigen Operationen (IMAP-Sync, Ordner laden, Analyse, Chat, Benchmark,
+Verbindungstests in den Einstellungen) laufen auf einem Hintergrund-Thread
+(`ui/workers.py`, `QThreadPool`-basiert) statt den GUI-Thread zu blockieren. Während einer
+Operation zeigt die Statusleiste einen Fortschrittsbalken mit Beschreibung
+("Synchronisiere „INBOX“ …" etc.) und die betroffenen Buttons werden deaktiviert, damit die
+App nie eingefroren wirkt und keine doppelten Aktionen ausgelöst werden können.
 
 ## Weitere Features
 
@@ -78,7 +92,8 @@ und als `MAILORGANIZER_MASTER_KEY` in der `.env` hinterlegen.
 python -m mailorganizer.main
 ```
 
-Beim ersten Start öffnet sich der Einstellungs-Dialog zur Konfiguration von Mail-Konto und Ollama.
+Beim ersten Start erklärt ein Willkommens-Dialog kurz die Einrichtung und führt in den
+Einstellungen-Tab (Mail-Konto + Ollama konfigurieren, dann "Speichern").
 
 ## Tests
 
@@ -96,11 +111,13 @@ Zielarchitektur. Aktuell umgesetzt:
 - `mailorganizer/models` – SQLAlchemy-ORM-Modelle & Datenklassen
 - `mailorganizer/services` – Mail-, Ollama-, Analyse-, Storage-, Scheduler-, Regel-, Cleanup-,
   Report-, Benchmark-, Webhook-, Sprach- und Chat-Service
-- `mailorganizer/ui` – PyQt6-Hauptfenster (Tab-Layout), Widgets (Ordner-Panel, Cleanup-Vorschau,
-  Bericht, Benchmark, Chat, Einstellungen mit Unterreitern), eigene QPainter-Chart-Widgets
-  (Pie/Bar, ohne matplotlib), Dark/Light-Themes
+- `mailorganizer/ui` – PyQt6-Hauptfenster (Tab-Layout), Widgets (Ordner-Baum, Cleanup-Vorschau,
+  Bericht, Benchmark, Chat mit Trefferliste, Einstellungen mit Unterreitern, Onboarding), eigene
+  QPainter-Chart-Widgets (Pie/Bar, ohne matplotlib), Dark/Light-Themes, `workers.py`
+  (Hintergrund-Threading für alle blockierenden Operationen)
 - `mailorganizer/utils` – Logging, Exceptions, Validierung, Krypto-Helfer, Mail-Utils
-- `tests` – Unit-Tests für alle Services (76 Tests)
+- `tests` – Unit-Tests für alle Services + UI-Hilfsmodule (86 Tests, laufen headless per
+  `conftest.py`, kein Display nötig)
 - `install.sh` / `install.ps1` / `install.bat` – Installations-Skripte für Linux/macOS/Windows
 
 ### Analyse-Regeln: Bedingungsformat
