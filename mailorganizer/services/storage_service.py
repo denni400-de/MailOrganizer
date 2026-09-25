@@ -98,6 +98,7 @@ class StorageService:
                     body=mail.body,
                     html_body=mail.html_body,
                     received_at=mail.received_at,
+                    folder=mail.folder,
                     is_read=mail.is_read,
                     is_archived=mail.is_archived,
                     is_important=mail.is_important,
@@ -118,6 +119,7 @@ class StorageService:
         include_archived: bool = False,
         include_spam: bool = False,
         limit: int = 100,
+        folder: str | None = None,
     ) -> list[Mail]:
         with self.session() as session:
             try:
@@ -126,10 +128,21 @@ class StorageService:
                     stmt = stmt.where(Mail.is_archived.is_(False))
                 if not include_spam:
                     stmt = stmt.where(Mail.is_spam.is_(False))
+                if folder is not None:
+                    stmt = stmt.where(Mail.folder == folder)
                 stmt = stmt.order_by(Mail.received_at.desc()).limit(limit)
                 return list(session.scalars(stmt))
             except SQLAlchemyError as exc:
                 raise StorageError(f"Failed to list mails: {exc}") from exc
+
+    def list_known_folders(self, user_id: int) -> list[str]:
+        """Return the distinct folder names already present in the local database for `user_id`."""
+        with self.session() as session:
+            try:
+                stmt = select(Mail.folder).where(Mail.user_id == user_id).distinct().order_by(Mail.folder)
+                return list(session.scalars(stmt))
+            except SQLAlchemyError as exc:
+                raise StorageError(f"Failed to list known folders: {exc}") from exc
 
     def set_mail_flags(
         self,
@@ -179,6 +192,50 @@ class StorageService:
                 return list(session.scalars(stmt))
             except SQLAlchemyError as exc:
                 raise StorageError(f"Failed to list mails for cleanup: {exc}") from exc
+
+    def preview_old_mails(self, user_id: int, days: int) -> list[Mail]:
+        """Read-only: return the non-archived mails older than `days` that a cleanup would archive."""
+        cutoff = datetime.now() - timedelta(days=days)
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(
+                    Mail.user_id == user_id,
+                    Mail.is_archived.is_(False),
+                    Mail.received_at < cutoff,
+                ).order_by(Mail.received_at.asc())
+                return list(session.scalars(stmt))
+            except SQLAlchemyError as exc:
+                raise StorageError(f"Failed to preview old mails: {exc}") from exc
+
+    def preview_spam_mails(self, user_id: int) -> list[Mail]:
+        """Read-only: return the mails currently flagged as spam that a cleanup would delete."""
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(Mail.user_id == user_id, Mail.is_spam.is_(True))
+                stmt = stmt.order_by(Mail.received_at.desc())
+                return list(session.scalars(stmt))
+            except SQLAlchemyError as exc:
+                raise StorageError(f"Failed to preview spam mails: {exc}") from exc
+
+    def preview_duplicate_mails(self, user_id: int) -> list[Mail]:
+        """Read-only: return the duplicate mails (older copies) that a cleanup would delete,
+        keeping the newest of each (sender, subject, received_at) group.
+        """
+        with self.session() as session:
+            try:
+                stmt = select(Mail).where(Mail.user_id == user_id).order_by(Mail.id.desc())
+                mails = list(session.scalars(stmt))
+                seen: set[tuple] = set()
+                duplicates: list[Mail] = []
+                for mail in mails:
+                    key = (mail.sender, mail.subject, mail.received_at)
+                    if key in seen:
+                        duplicates.append(mail)
+                    else:
+                        seen.add(key)
+                return duplicates
+            except SQLAlchemyError as exc:
+                raise StorageError(f"Failed to preview duplicate mails: {exc}") from exc
 
     def archive_mails_older_than(self, user_id: int, days: int) -> int:
         """Mark all non-archived mails older than `days` as archived. Returns the count affected."""

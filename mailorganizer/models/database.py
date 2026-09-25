@@ -58,6 +58,7 @@ class Mail(Base):
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     html_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    folder: Mapped[str] = mapped_column(String, default="INBOX", server_default="INBOX")
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
     is_important: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -137,8 +138,20 @@ def init_engine(database_path: str | Path, echo: bool = False):
 
 
 def create_all(engine) -> None:
-    """Create all tables that do not yet exist."""
+    """Create all tables that do not yet exist, then apply lightweight in-place migrations
+    for columns added after a database was first created (no Alembic wired up yet — see
+    plan section 16, tables stay simple enough for manual ALTER TABLE guards)."""
     Base.metadata.create_all(engine)
+    _migrate_schema(engine)
+
+
+def _migrate_schema(engine) -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        existing_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(mails)"))}
+        if "folder" not in existing_columns:
+            conn.execute(text("ALTER TABLE mails ADD COLUMN folder TEXT NOT NULL DEFAULT 'INBOX'"))
 
 
 def get_session_factory(engine) -> sessionmaker:

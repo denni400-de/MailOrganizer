@@ -87,6 +87,22 @@ class MailService:
             raise MailConnectionError("Not connected. Call connect() first.")
         return self._imap
 
+    # -- Folders -------------------------------------------------------
+
+    def list_folders(self) -> list[str]:
+        """Return the names of all IMAP folders available on this account, INBOX first."""
+        imap = self._require_connection()
+        try:
+            raw_folders = imap.list_folders()
+        except (IMAPClientError, OSError) as exc:
+            raise MailFetchError(f"Failed to list folders: {exc}") from exc
+
+        names = [name for _flags, _delimiter, name in raw_folders]
+        if "INBOX" in names:
+            names.remove("INBOX")
+            names.insert(0, "INBOX")
+        return names
+
     # -- Fetching ----------------------------------------------------------
 
     def fetch_mails(self, folder: str = "INBOX", limit: int = 50, unseen_only: bool = False) -> list[MailData]:

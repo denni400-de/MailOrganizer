@@ -111,6 +111,35 @@ def test_send_mail_without_smtp_server_raises():
         service.send_mail(["to@example.com"], "Subject", "Body")
 
 
+@patch("mailorganizer.services.mail_service.IMAPClient")
+def test_list_folders_puts_inbox_first(mock_imap_cls):
+    mock_client = MagicMock()
+    mock_imap_cls.return_value = mock_client
+    mock_client.list_folders.return_value = [
+        ((b"\\HasNoChildren",), b"/", "Archive"),
+        ((b"\\HasNoChildren",), b"/", "INBOX"),
+        ((b"\\HasNoChildren",), b"/", "Sent"),
+    ]
+
+    service = MailService(make_credentials())
+    service.connect()
+    folders = service.list_folders()
+
+    assert folders == ["INBOX", "Archive", "Sent"]
+
+
+@patch("mailorganizer.services.mail_service.IMAPClient")
+def test_list_folders_wraps_errors(mock_imap_cls):
+    mock_client = MagicMock()
+    mock_imap_cls.return_value = mock_client
+    mock_client.list_folders.side_effect = IMAPClientError("boom")
+
+    service = MailService(make_credentials())
+    service.connect()
+    with pytest.raises(MailFetchError):
+        service.list_folders()
+
+
 @patch("mailorganizer.services.mail_service.smtplib.SMTP")
 def test_send_mail_success(mock_smtp_cls):
     mock_smtp = MagicMock()
