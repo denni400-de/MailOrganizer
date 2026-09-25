@@ -1,0 +1,26 @@
+QWidget {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+}
+
+QTableWidget {
+    background-color: #252526;
+    gridline-color: #3c3c3c;
+    alternate-background-color: #2a2a2b;
+}
+
+QPushButton {
+    background-color: #3c3c3c;
+    border: 1px solid #555555;
+    padding: 4px 10px;
+}
+
+QPushButton:hover {
+    background-color: #4a4a4a;
+}
+
+QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    background-color: #2d2d2d;
+    border: 1px solid #555555;
+    color: #e0e0e0;
+}
